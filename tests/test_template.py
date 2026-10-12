@@ -12,7 +12,17 @@ def test_user_data_installs_desktop_tk8s_and_prepulls_image():
     for pkg in ("qemu-guest-agent", "podman", "xfce4", "xrdp", "xorgxrdp", "firefox-esr"):
         assert f"- {pkg}" in ud
     assert "TK_VERSION=v2026.10.0 sh" in ud
-    assert "ghcr.io/tarokolabs/tk8s/node:v1.37.0" in ud
+    # the shared image store (tk8s >= v2026.10.3) is filled as the student, after tk8s is installed:
+    # /opt/taroko ends up owned by the student uid every clone's student shares, and a clone creates
+    # its clusters without pulling anything
+    pull = 'su - student -c "tkctl pull images --k8s 1.37.0"'
+    assert pull in ud
+    assert (
+        ud.index("TK_VERSION=v2026.10.0 sh")
+        < ud.index(pull)
+        < ud.index("touch " + template.BUILD_OK)
+    )
+    assert "podman pull" not in ud
     assert "name: student" in ud and "NOPASSWD:ALL" in ud
     assert "PasswordAuthentication yes" in ud and "ssh_pwauth: true" in ud
     assert "swapoff" in ud and "mode: poweroff" in ud
