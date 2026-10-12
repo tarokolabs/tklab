@@ -23,7 +23,8 @@ FIRST_BOOT_TIMEOUT = 2400
 def user_data(tk8s_version: str, k8s: str) -> str:
     raw = f"https://raw.githubusercontent.com/tarokolabs/tk8s/{tk8s_version}/install.sh"
     return f"""#cloud-config
-# tklab template: tk8s preinstalled, node image pre-pulled, XFCE desktop over xrdp.
+# tklab template: tk8s preinstalled, every cluster image pre-pulled into its shared image
+# store, XFCE desktop over xrdp.
 # The student user gets its password per clone (PVE cloud-init cipassword).
 package_update: true
 package_upgrade: true
@@ -69,7 +70,10 @@ write_files:
       sed -i '/ swap / s/^/#/' /etc/fstab
       curl -fsSL -o /tmp/install.sh {raw}
       su - student -c "TK_VERSION={tk8s_version} sh /tmp/install.sh"
-      podman pull ghcr.io/tarokolabs/tk8s/node:v{k8s}
+      # Fill tk8s's shared image store (tk8s >= v2026.10.3) as the student: the node image, the
+      # control plane, Cilium and the addons land in /opt/taroko/images, owned by the student uid
+      # every clone's student shares, so a clone creates its clusters without pulling anything.
+      su - student -c "tkctl pull images --k8s {k8s}"
       install -d /var/lib/tklab
       touch {BUILD_OK}
       cloud-init clean --logs --machine-id

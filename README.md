@@ -69,7 +69,7 @@ memory = 32768
 
 `tklab init pve`／`init guacamole` 只做一邊。範本重建後 PVE 會清掉 `/vms/3900` 的 ACL，跑一次 `init pve` 就補回。不想把管理員密碼交給工具的話，`--manual` 會印出等價的 `pveum` 腳本與 Guacamole 的設定清單。
 
-然後 `tklab create template`（`pve.node` 是 `auto` 時要加 `--node`）。第一次跑只會把 cloud-init 的 snippet 寫到本機並印出 `scp` 指令：PVE 的 API 不收 snippets，得自己複製到儲存的 `snippets/` 一次；講師機如果掛了那個目錄，在設定檔填 `template.snippets_dir` 就會直接寫進去。再跑一次就會匯入映像、第一次開機裝 tk8s、XFCE、xrdp 並預拉 node image，關機後轉成範本，約 15 分鐘。建置腳本任一步失敗 VM 會留著不關機，逾時後指令會叫你去看主控台。
+然後 `tklab create template`（`pve.node` 是 `auto` 時要加 `--node`）。第一次跑只會把 cloud-init 的 snippet 寫到本機並印出 `scp` 指令：PVE 的 API 不收 snippets，得自己複製到儲存的 `snippets/` 一次；講師機如果掛了那個目錄，在設定檔填 `template.snippets_dir` 就會直接寫進去。再跑一次就會匯入映像、第一次開機裝 tk8s、XFCE、xrdp，並以 `tkctl pull images` 把建叢集要的全部 image 拉進 tk8s 的共用 image store（需要 tk8s v2026.10.3 以上），關機後轉成範本，約 15 分鐘；之後每台學員 VM 建叢集都不必再下載。建置腳本任一步失敗 VM 會留著不關機，逾時後指令會叫你去看主控台。
 
 ## 權限
 
