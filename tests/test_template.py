@@ -194,10 +194,25 @@ def test_build_skips_download_when_image_is_present_and_needs_a_node():
     assert next(c for c in pve.calls if c[0] == "create_vm")[1] == ("pve-node9", 3900)
 
 
-def test_build_needs_k8s_version():
+def test_user_data_without_k8s_pin_follows_tk8s_default():
+    ud = template.user_data("v2026.10.6", None)
+    assert 'su - student -c "tkctl pull images"\n' in ud
+    assert "--k8s" not in ud
+
+
+def test_build_without_k8s_pin_writes_an_unpinned_snippet(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     lines = []
-    assert template.build(cfg(k8s=None), FakePve(), k8s=None, node=None, log=lines.append) == 2
-    assert "--k8s" in "\n".join(lines)
+    assert template.build(cfg(k8s=None), FakePve(), k8s=None, node=None, log=lines.append) == 1
+    written = (tmp_path / "tklab" / template.SNIPPET).read_text()
+    assert 'tkctl pull images"' in written and "--k8s" not in written
+
+
+def test_build_k8s_flag_pins_the_prepull(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert template.build(cfg(k8s=None), FakePve(), k8s="1.36.5", node=None, **QUIET) == 1
+    written = (tmp_path / "tklab" / template.SNIPPET).read_text()
+    assert "tkctl pull images --k8s 1.36.5" in written
 
 
 def test_build_403_points_at_init_pve():

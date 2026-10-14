@@ -20,8 +20,11 @@ IMPORT_TIMEOUT = 1800
 FIRST_BOOT_TIMEOUT = 2400
 
 
-def user_data(tk8s_version: str, k8s: str) -> str:
+def user_data(tk8s_version: str, k8s: str | None) -> str:
     raw = f"https://raw.githubusercontent.com/tarokolabs/tk8s/{tk8s_version}/install.sh"
+    # Without a pin the pull follows that tk8s checkout's default Kubernetes version, the one
+    # `tkctl create cluster` picks inside every clone, so the two cannot drift apart.
+    pull = f"tkctl pull images --k8s {k8s}" if k8s else "tkctl pull images"
     return f"""#cloud-config
 # tklab template: tk8s preinstalled, every cluster image pre-pulled into its shared image
 # store, CNI plugins installed, XFCE desktop over xrdp.
@@ -73,7 +76,7 @@ write_files:
       # Fill tk8s's shared image store (tk8s >= v2026.10.3) as the student: the node image, the
       # control plane, Cilium and the addons land in /opt/taroko/images, owned by the student uid
       # every clone's student shares, so a clone creates its clusters without pulling anything.
-      su - student -c "tkctl pull images --k8s {k8s}"
+      su - student -c "{pull}"
       # The CNI plugins are the last download a clone's first create would still make.
       su - student -c "task -d /opt/taroko/tk8s nodes:cni-plugins"
       install -d /var/lib/tklab
@@ -96,9 +99,6 @@ def _has(pve, node: str, storage: str, content: str, filename: str) -> bool:
 def build(cfg: Config, pve, *, k8s: str | None, node: str | None, log=print) -> int:
     t = cfg.template
     k8s = k8s or t.k8s
-    if not k8s:
-        log("template.k8s is not set and --k8s not given")
-        return 2
     node = node or (cfg.pve.node if cfg.pve.node != "auto" else None)
     if not node:
         log("pve.node is auto: pass --node NAME to say where the template is built")

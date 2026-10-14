@@ -107,7 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--k8s", action="store_true", help="also create a tk8s cluster inside every VM")
     c.add_argument("--parallel", type=int, default=5, help="students provisioned at once")
     t = create_nouns.add_parser("template", help="build the node template from the cloud image")
-    t.add_argument("--k8s", help="Kubernetes version of the node image to pre-pull")
+    t.add_argument(
+        "--k8s", help="Kubernetes version to pre-pull (default: the tk8s release's own default)"
+    )
     t.add_argument("--node", help="PVE node to build on (required when pve.node is auto)")
 
     get = verbs.add_parser("get", help="list classes")
