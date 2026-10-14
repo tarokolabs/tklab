@@ -108,7 +108,8 @@ disk = "60G"
 image_url = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
 image_sha512 = "replace-with-the-value-from-SHA512SUMS"
 tk8s_version = "v2026.10.3"     # tag or branch install.sh checks out (v2026.10.3 or newer)
-k8s = "1.37.0"                   # Kubernetes version whose images are pre-pulled into the template
+# k8s = "1.37.1"                 # pin the Kubernetes version pre-pulled into the template; unset,
+                                 # the pull follows the tk8s release's default, like tkctl create
 # snippets_dir = "/mnt/snippets"  # pve.storage's snippets/ mounted here; the build writes it there
 # disk = "12G"                    # the template's disk; clones are grown to vm.disk, and a full
                                  # clone or migration copies this size, so keep it small

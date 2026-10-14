@@ -194,10 +194,107 @@ def test_build_skips_download_when_image_is_present_and_needs_a_node():
     assert next(c for c in pve.calls if c[0] == "create_vm")[1] == ("pve-node9", 3900)
 
 
-def test_build_needs_k8s_version():
+def test_user_data_without_k8s_pin_follows_tk8s_default():
+    ud = template.user_data("v2026.10.6", None)
+    assert 'su - student -c "tkctl pull images"\n' in ud
+    assert "--k8s" not in ud
+
+
+def test_build_without_k8s_pin_writes_an_unpinned_snippet(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     lines = []
-    assert template.build(cfg(k8s=None), FakePve(), k8s=None, node=None, log=lines.append) == 2
-    assert "--k8s" in "\n".join(lines)
+    assert template.build(cfg(k8s=None), FakePve(), k8s=None, node=None, log=lines.append) == 1
+    written = (tmp_path / "tklab" / template.SNIPPET).read_text()
+    assert 'tkctl pull images"' in written and "--k8s" not in written
+
+
+def test_build_stops_when_settings_changed_since_the_snippet_was_copied(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    local = tmp_path / "tklab" / template.SNIPPET
+    local.parent.mkdir(parents=True)
+    local.write_text(template.user_data("v2026.10.0", "1.37.0"))
+    pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
+    lines = []
+    assert template.build(cfg(k8s=None), pve, k8s=None, node=None, log=lines.append) == 1
+    assert 'tkctl pull images"' in local.read_text() and "--k8s" not in local.read_text()
+    joined = "\n".join(lines)
+    assert "scp" in joined and f"nas-nfs:snippets/{template.SNIPPET}" in joined
+    assert not any(c[0] in ("download_url", "create_vm") for c in pve.calls)
+
+
+def test_build_goes_on_when_the_snippet_matches_the_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    local = tmp_path / "tklab" / template.SNIPPET
+    local.parent.mkdir(parents=True)
+    local.write_text(template.user_data("v2026.10.0", "1.37.0"))
+    pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
+    pve.create_vm = lambda node, vmid, **kv: (
+        pve.calls.append(("create_vm", (node, vmid), kv)) or "UPID:pve-node7:cr"
+    )
+    pve.wait_status = lambda *a, **kw: None
+    pve.make_template = lambda *a: None
+    pve.vms[3900] = {
+        "vmid": 3900,
+        "name": "t",
+        "node": "pve-node7",
+        "pool": "",
+        "status": "stopped",
+        "tags": "",
+        "cores": 8,
+        "memory": 1,
+        "balloon": 1,
+        "disk": "2G",
+    }
+    assert template.build(cfg(), pve, k8s=None, node=None, **QUIET) == 0
+    assert any(c[0] == "create_vm" for c in pve.calls)
+
+
+def test_build_rewrites_a_stale_snippet_in_the_mounted_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    mounted = tmp_path / "snippets"
+    mounted.mkdir()
+    (mounted / template.SNIPPET).write_text(template.user_data("v2026.10.0", "1.37.0"))
+    c = cfg(k8s=None)
+    c = Config(
+        c.pve,
+        c.guacamole,
+        c.vm,
+        TemplateConfig(
+            c.template.image_url,
+            c.template.image_sha512,
+            c.template.tk8s_version,
+            None,
+            snippets_dir=str(mounted),
+        ),
+    )
+    pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
+    pve.create_vm = lambda node, vmid, **kv: "UPID:pve-node7:cr"
+    pve.wait_status = lambda *a, **kw: None
+    pve.make_template = lambda *a: None
+    pve.vms[3900] = {
+        "vmid": 3900,
+        "name": "t",
+        "node": "pve-node7",
+        "pool": "",
+        "status": "stopped",
+        "tags": "",
+        "cores": 8,
+        "memory": 1,
+        "balloon": 1,
+        "disk": "2G",
+    }
+    lines = []
+    assert template.build(c, pve, k8s=None, node=None, log=lines.append) == 0
+    written = (mounted / template.SNIPPET).read_text()
+    assert 'tkctl pull images"' in written and "--k8s" not in written
+    assert any("rewrote" in line or "wrote" in line for line in lines)
+
+
+def test_build_k8s_flag_pins_the_prepull(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert template.build(cfg(k8s=None), FakePve(), k8s="1.36.5", node=None, **QUIET) == 1
+    written = (tmp_path / "tklab" / template.SNIPPET).read_text()
+    assert "tkctl pull images --k8s 1.36.5" in written
 
 
 def test_build_403_points_at_init_pve():

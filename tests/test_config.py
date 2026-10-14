@@ -47,6 +47,12 @@ def test_load_good(tmp_path):
     assert cfg.pve.ca_file is None
     assert cfg.vm.memory == 24576 and cfg.vm.disk == "60G"
     assert cfg.template.tk8s_version == "v2026.10.0"
+    assert cfg.template.k8s == "1.37.0"
+
+
+def test_template_k8s_is_optional(tmp_path):
+    cfg = config.load(write(tmp_path, GOOD.replace('k8s = "1.37.0"\n', "")))
+    assert cfg.template.k8s is None
 
 
 def test_missing_file_names_the_path(tmp_path):

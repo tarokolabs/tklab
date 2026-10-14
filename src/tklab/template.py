@@ -20,8 +20,11 @@ IMPORT_TIMEOUT = 1800
 FIRST_BOOT_TIMEOUT = 2400
 
 
-def user_data(tk8s_version: str, k8s: str) -> str:
+def user_data(tk8s_version: str, k8s: str | None) -> str:
     raw = f"https://raw.githubusercontent.com/tarokolabs/tk8s/{tk8s_version}/install.sh"
+    # Without a pin the pull follows that tk8s checkout's default Kubernetes version, the one
+    # `tkctl create cluster` picks inside every clone, so the two cannot drift apart.
+    pull = f"tkctl pull images --k8s {k8s}" if k8s else "tkctl pull images"
     return f"""#cloud-config
 # tklab template: tk8s preinstalled, every cluster image pre-pulled into its shared image
 # store, CNI plugins installed, XFCE desktop over xrdp.
@@ -73,7 +76,7 @@ write_files:
       # Fill tk8s's shared image store (tk8s >= v2026.10.3) as the student: the node image, the
       # control plane, Cilium and the addons land in /opt/taroko/images, owned by the student uid
       # every clone's student shares, so a clone creates its clusters without pulling anything.
-      su - student -c "tkctl pull images --k8s {k8s}"
+      su - student -c "{pull}"
       # The CNI plugins are the last download a clone's first create would still make.
       su - student -c "task -d /opt/taroko/tk8s nodes:cni-plugins"
       install -d /var/lib/tklab
@@ -96,9 +99,6 @@ def _has(pve, node: str, storage: str, content: str, filename: str) -> bool:
 def build(cfg: Config, pve, *, k8s: str | None, node: str | None, log=print) -> int:
     t = cfg.template
     k8s = k8s or t.k8s
-    if not k8s:
-        log("template.k8s is not set and --k8s not given")
-        return 2
     node = node or (cfg.pve.node if cfg.pve.node != "auto" else None)
     if not node:
         log("pve.node is auto: pass --node NAME to say where the template is built")
@@ -107,21 +107,30 @@ def build(cfg: Config, pve, *, k8s: str | None, node: str | None, log=print) -> 
     image = t.image_url.rsplit("/", 1)[-1]
     vmid = cfg.pve.template
 
-    if not _has(pve, node, storage, "snippets", SNIPPET):
-        data = user_data(t.tk8s_version, k8s)
-        if t.snippets_dir:
-            target = Path(t.snippets_dir) / SNIPPET
+    # The snippet bakes in tk8s_version and the pre-pull version, so a copy left on the storage
+    # from an earlier build would silently build with the earlier settings. A mounted snippets/
+    # is rewritten in place; otherwise the local copy made for the operator is the reference.
+    data = user_data(t.tk8s_version, k8s)
+    on_storage = _has(pve, node, storage, "snippets", SNIPPET)
+    if t.snippets_dir:
+        target = Path(t.snippets_dir) / SNIPPET
+        if not target.exists() or target.read_text() != data:
             target.write_text(data)
             log(f"wrote {target}")
-            if not _has(pve, node, storage, "snippets", SNIPPET):
-                log(f"{target} is not visible as {storage}:snippets/{SNIPPET}; check the mount")
-                return 1
-        else:
-            local = config.state_dir() / SNIPPET
+        if not _has(pve, node, storage, "snippets", SNIPPET):
+            log(f"{target} is not visible as {storage}:snippets/{SNIPPET}; check the mount")
+            return 1
+    else:
+        local = config.state_dir() / SNIPPET
+        stale = on_storage and local.exists() and local.read_text() != data
+        if not on_storage or stale:
             local.parent.mkdir(parents=True, exist_ok=True)
             local.write_text(data)
             log(f"wrote {local}")
-            log("PVE cannot receive snippets over the API; copy it onto the storage once, e.g.")
+            if stale:
+                log(f"settings changed since {storage}:snippets/{SNIPPET} was copied; replace it")
+            else:
+                log("PVE cannot receive snippets over the API; copy it onto the storage once, e.g.")
             log(f"  scp {local} root@<pve-node>:/mnt/pve/{storage}/snippets/")
             log("then run `tklab create template` again")
             return 1
