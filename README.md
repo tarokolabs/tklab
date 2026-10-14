@@ -69,7 +69,7 @@ memory = 32768
 
 `tklab init pve`／`init guacamole` 只做一邊。範本重建後 PVE 會清掉 `/vms/3900` 的 ACL，跑一次 `init pve` 就補回。不想把管理員密碼交給工具的話，`--manual` 會印出等價的 `pveum` 腳本與 Guacamole 的設定清單。
 
-然後 `tklab create template`（`pve.node` 是 `auto` 時要加 `--node`）。第一次跑只會把 cloud-init 的 snippet 寫到本機並印出 `scp` 指令：PVE 的 API 不收 snippets，得自己複製到儲存的 `snippets/` 一次；講師機如果掛了那個目錄，在設定檔填 `template.snippets_dir` 就會直接寫進去。再跑一次就會匯入映像、第一次開機裝 tk8s、XFCE、xrdp，並以 `tkctl pull images` 把建叢集要的全部 image 拉進 tk8s 的共用 image store（需要 tk8s v2026.10.3 以上；沒設 `template.k8s` 或 `--k8s` 就跟那個 tk8s 版本的預設 Kubernetes 走，跟學員 VM 裡 `tkctl create cluster` 挑的一樣；釘別的版本只對叢集也建那個版本的班有用）。snippet 寫死了 tk8s 版本與預拉版本，所以設定改了再跑 `create template`，工具會發現儲存上的 snippet 已經過期，重寫本機那份並再印一次 `scp` 指令（有 `snippets_dir` 就直接改寫）、裝好 CNI plugins，關機後轉成範本，約 15 分鐘；之後每台學員 VM 建叢集都不必再下載。建置腳本任一步失敗 VM 會留著不關機，逾時後指令會叫你去看主控台。
+然後 `tklab create template`（`pve.node` 是 `auto` 時要加 `--node`）。第一次跑只會把 cloud-init 的 snippet 寫到本機並印出 `scp` 指令：PVE 的 API 不收 snippets，得自己複製到儲存的 `snippets/` 一次；講師機如果掛了那個目錄，在設定檔填 `template.snippets_dir` 就會直接寫進去。再跑一次就會匯入映像、第一次開機裝 tk8s、XFCE、xrdp，並以 `tkctl pull images` 把建叢集要的全部 image 拉進 tk8s 的共用 image store（需要 tk8s v2026.10.7 以上，CNI plugins 由 `tkctl create cluster --phase nodes/cni-plugins` 裝；沒設 `template.k8s` 或 `--k8s` 就跟那個 tk8s 版本的預設 Kubernetes 走，跟學員 VM 裡 `tkctl create cluster` 挑的一樣；釘別的版本只對叢集也建那個版本的班有用）。snippet 寫死了 tk8s 版本與預拉版本，所以設定改了再跑 `create template`，工具會發現儲存上的 snippet 已經過期，重寫本機那份並再印一次 `scp` 指令（有 `snippets_dir` 就直接改寫）、裝好 CNI plugins，關機後轉成範本，約 15 分鐘；之後每台學員 VM 建叢集都不必再下載。建置腳本任一步失敗 VM 會留著不關機，逾時後指令會叫你去看主控台。
 
 ## 權限
 

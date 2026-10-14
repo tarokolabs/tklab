@@ -77,8 +77,9 @@ write_files:
       # control plane, Cilium and the addons land in /opt/taroko/images, owned by the student uid
       # every clone's student shares, so a clone creates its clusters without pulling anything.
       su - student -c "{pull}"
-      # The CNI plugins are the last download a clone's first create would still make.
-      su - student -c "task -d /opt/taroko/tk8s nodes:cni-plugins"
+      # The CNI plugins are the last download a clone's first create would still make; the
+      # phase only installs them under /opt/taroko/cni, no cluster is created.
+      su - student -c "tkctl create cluster --phase nodes/cni-plugins"
       install -d /var/lib/tklab
       touch {BUILD_OK}
       cloud-init clean --logs --machine-id

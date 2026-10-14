@@ -23,9 +23,11 @@ def test_user_data_installs_desktop_tk8s_and_prepulls_image():
         < ud.index("touch " + template.BUILD_OK)
     )
     assert "podman pull" not in ud
-    # the CNI plugins are the last thing a clone's first create would still download
-    cni = 'su - student -c "task -d /opt/taroko/tk8s nodes:cni-plugins"'
+    # the CNI plugins are the last thing a clone's first create would still download; tk8s
+    # v2026.10.7 has no task binary, its phases are tkctl's own
+    cni = 'su - student -c "tkctl create cluster --phase nodes/cni-plugins"'
     assert ud.index(pull) < ud.index(cni) < ud.index("touch " + template.BUILD_OK)
+    assert "task -d" not in ud
     assert "name: student" in ud and "NOPASSWD:ALL" in ud
     assert "PasswordAuthentication yes" in ud and "ssh_pwauth: true" in ud
     assert "swapoff" in ud and "mode: poweroff" in ud
