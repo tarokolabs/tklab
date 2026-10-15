@@ -71,7 +71,7 @@ def test_create_provisions_vm_and_two_connections_per_student():
     assert pve.vms[3101]["status"] == "running"
     assert guac.users["alice"] == e.guac_password
     names = sorted(c["name"] for c in guac.connections.values())
-    assert names == ["k8s-101-alice Desktop", "k8s-101-alice SSH"]
+    assert names == ["k8s-101-alice Browser", "k8s-101-alice SSH"]
     rdp = next(c for c in guac.connections.values() if c["protocol"] == "rdp")
     assert rdp["parameters"]["hostname"] == "192.168.1.77"
     assert rdp["parameters"]["username"] == "student"
@@ -87,7 +87,7 @@ def test_create_uses_class_prefixed_guac_user_for_numbered_students():
     (e,) = provision.create(cd(["01"]), CFG, pve, guac, parallel=1, **QUIET)
     assert e.guac_user == "k8s-101-01" and "k8s-101-01" in guac.users
     assert sorted(c["name"] for c in guac.connections.values()) == [
-        "k8s-101-01 Desktop",
+        "k8s-101-01 Browser",
         "k8s-101-01 SSH",
     ]
 
@@ -245,7 +245,7 @@ def test_destroy_removes_only_this_class_and_tolerates_partial_state():
     assert "k8s-101" not in guac.groups and "k8s-102" in guac.groups
     assert [c["name"] for c in guac.connections.values()] == [
         "k8s-102-zed SSH",
-        "k8s-102-zed Desktop",
+        "k8s-102-zed Browser",
     ]
     assert not roster.path("k8s-101").exists()
 

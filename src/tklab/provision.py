@@ -261,7 +261,7 @@ def _connect(c: _Class, s: Student, e: roster.Entry, *, resume: bool) -> roster.
             guac_password = e.guac_password
         existing = {x["name"] for x in c.guac.group_connections(c.group_id)}
         ids = []
-        for kind, params in (("SSH", SSH_PARAMS), ("Desktop", RDP_PARAMS)):
+        for kind, params in (("SSH", SSH_PARAMS), ("Browser", RDP_PARAMS)):
             conn_name = f"{c.cd.name}-{s.name} {kind}"
             if conn_name in existing:
                 continue

@@ -1,6 +1,6 @@
 # tklab
 
-給講師用的工具：一道指令在 Proxmox VE 上為每位學員建一台預裝 [tk8s](https://github.com/tarokolabs/tk8s) 的 VM，並在 Guacamole 建好該學員的帳號與 SSH／桌面連線；課程結束一道指令整批清掉。講師機不需要裝 tk8s。
+給講師用的工具：一道指令在 Proxmox VE 上為每位學員建一台預裝 [tk8s](https://github.com/tarokolabs/tk8s) 的 VM，並在 Guacamole 建好該學員的帳號與 SSH、瀏覽器兩條連線；課程結束一道指令整批清掉。講師機不需要裝 tk8s。
 
 ## 安裝（講師機器）
 
@@ -45,7 +45,7 @@ memory = 32768
 
 `--k8s`（檔案裡 `k8s = true`）會在每台 VM 連上 Guacamole 之後，透過 qemu-guest-agent 以 `student` 身分執行 `tkctl create cluster tk8s && tkctl use cluster tk8s && tkctl verify cluster tk8s`，學員一登入就有一個驗證過的叢集，`~/.kube/config` 已指好。同一個 PVE 節點上同時最多建兩個叢集（更多會互搶拉 image 的頻寬而逾時），每個最多等 20 分鐘；VM 內的輸出在 `/var/log/tklab-k8s.log`。失敗只會記在名冊的 error 欄，VM 與帳號都留著，重跑同一道 `create class` 只會重做叢集那一步。VM 的 tag 多一個 `k8s`，`describe -o toml` 會把它寫回去。這一步需要開班用的角色有 `VM.GuestAgent.Unrestricted`（舊安裝重跑一次 `tklab init pve` 就會補上）。
 
-每位學員一台 `lab-<班名>-<學員>` 的 VM（tag `lab;class-<班名>;expires-<日期>`），Guacamole 一個帳號（有名字的學員用名字，編號的用 `<班名>-<編號>`）與兩條連線：`<班名>-<學員> SSH` 和 `<班名>-<學員> Desktop`。名冊（VMID、IP、Guacamole 帳密、VM 的 `student` 密碼、失敗原因）寫在 `$XDG_STATE_HOME/tklab/<班名>.csv`（預設 `~/.local/state/…`），權限 0600，`describe class --roster` 會印出來。
+每位學員一台 `lab-<班名>-<學員>` 的 VM（tag `lab;class-<班名>;expires-<日期>`），Guacamole 一個帳號（有名字的學員用名字，編號的用 `<班名>-<編號>`）與兩條連線：`<班名>-<學員> SSH` 和 `<班名>-<學員> Browser`（RDP 進去就是一個 Firefox 視窗，關掉瀏覽器連線就結束；沒有桌面）。名冊（VMID、IP、Guacamole 帳密、VM 的 `student` 密碼、失敗原因）寫在 `$XDG_STATE_HOME/tklab/<班名>.csv`（預設 `~/.local/state/…`），權限 0600，`describe class --roster` 會印出來。
 
 `--parallel N`（預設 5）控制同時建幾台。某位學員失敗時其他人照建，名冊的 `error` 欄寫原因，結束碼 1；把原因排除後**再跑一次同一道 `create class`** 會續建：已完成的學員不動，失敗的從中斷處接下去（clone 失敗的重 clone、沒拿到 IP 的再等一次、Guacamole 沒建好的補建）。班級已有 VM 但名冊不在時會拒絕，避免建出重複的 VM。
 
@@ -69,7 +69,7 @@ memory = 32768
 
 `tklab init pve`／`init guacamole` 只做一邊。範本重建後 PVE 會清掉 `/vms/3900` 的 ACL，跑一次 `init pve` 就補回。不想把管理員密碼交給工具的話，`--manual` 會印出等價的 `pveum` 腳本與 Guacamole 的設定清單。
 
-然後 `tklab create template`（`pve.node` 是 `auto` 時要加 `--node`）。第一次跑只會把 cloud-init 的 snippet 寫到本機並印出 `scp` 指令：PVE 的 API 不收 snippets，得自己複製到儲存的 `snippets/` 一次；講師機如果掛了那個目錄，在設定檔填 `template.snippets_dir` 就會直接寫進去。再跑一次就會匯入映像、第一次開機裝 tk8s、XFCE、xrdp，並以 `tkctl pull images` 把建叢集要的全部 image 拉進 tk8s 的共用 image store（需要 tk8s v2026.10.7 以上，CNI plugins 由 `tkctl create cluster --phase nodes/cni-plugins` 裝；沒設 `template.k8s` 或 `--k8s` 就跟那個 tk8s 版本的預設 Kubernetes 走，跟學員 VM 裡 `tkctl create cluster` 挑的一樣；釘別的版本只對叢集也建那個版本的班有用）。snippet 寫死了 tk8s 版本與預拉版本，所以設定改了再跑 `create template`，工具會發現儲存上的 snippet 已經過期，重寫本機那份並再印一次 `scp` 指令（有 `snippets_dir` 就直接改寫）、裝好 CNI plugins，關機後轉成範本，約 15 分鐘；之後每台學員 VM 建叢集都不必再下載。建置腳本任一步失敗 VM 會留著不關機，逾時後指令會叫你去看主控台。
+然後 `tklab create template`（`pve.node` 是 `auto` 時要加 `--node`）。第一次跑只會把 cloud-init 的 snippet 寫到本機並印出 `scp` 指令：PVE 的 API 不收 snippets，得自己複製到儲存的 `snippets/` 一次；講師機如果掛了那個目錄，在設定檔填 `template.snippets_dir` 就會直接寫進去。再跑一次就會匯入映像、第一次開機裝 tk8s、xrdp 與瀏覽器，並以 `tkctl pull images` 把建叢集要的全部 image 拉進 tk8s 的共用 image store（需要 tk8s v2026.10.7 以上，CNI plugins 由 `tkctl create cluster --phase nodes/cni-plugins` 裝；沒設 `template.k8s` 或 `--k8s` 就跟那個 tk8s 版本的預設 Kubernetes 走，跟學員 VM 裡 `tkctl create cluster` 挑的一樣；釘別的版本只對叢集也建那個版本的班有用）。snippet 寫死了 tk8s 版本與預拉版本，所以設定改了再跑 `create template`，工具會發現儲存上的 snippet 已經過期，重寫本機那份並再印一次 `scp` 指令（有 `snippets_dir` 就直接改寫）、裝好 CNI plugins，關機後轉成範本，約 15 分鐘；之後每台學員 VM 建叢集都不必再下載。建置腳本任一步失敗 VM 會留著不關機，逾時後指令會叫你去看主控台。
 
 ## 權限
 
