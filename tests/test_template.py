@@ -53,6 +53,11 @@ def test_the_session_is_the_browser():
     assert "xfce4-session" not in xsession
     # openbox opens the Firefox window maximized: the session is the browser, nothing else to see
     assert "/home/student/.config/openbox/rc.xml" in ud
+    # install -d -o applies the owner to the last directory only: a root-owned ~/.config left
+    # Firefox unable to create its profile ("Your Firefox profile cannot be loaded")
+    assert (
+        "install -d -o student -g student /home/student/.config /home/student/.config/openbox" in ud
+    )
     assert '<application class="firefox-esr" type="normal">' in ud
     assert "<maximized>yes</maximized>" in ud
 
