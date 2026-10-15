@@ -16,6 +16,7 @@ from .pve import PveError
 SNIPPET = "tklab-template.yaml"
 VM_NAME = "tklab-template"
 BUILD_OK = "/var/lib/tklab/build-ok"
+RULE = "/usr/local/share/tklab/openbox-firefox.xml"  # openbox: Firefox opens maximized
 IMPORT_TIMEOUT = 1800
 FIRST_BOOT_TIMEOUT = 2400
 
@@ -68,6 +69,11 @@ write_files:
       #!/bin/sh
       openbox &
       exec firefox --new-window about:blank
+  - path: {RULE}
+    content: |
+      <application class="firefox-esr" type="normal">
+        <maximized>yes</maximized>
+      </application>
   - path: /usr/local/sbin/tklab-build
     permissions: "0755"
     content: |
@@ -78,6 +84,12 @@ write_files:
       systemctl enable xrdp
       swapoff -a
       sed -i '/ swap / s/^/#/' /etc/fstab
+      # openbox opens the Firefox window maximized: the session is the browser, there is
+      # nothing else to see. The rule goes into the student's copy of the default rc.xml.
+      install -d -o student -g student /home/student/.config/openbox
+      awk '/<\\/applications>/ {{ while ((getline l < "{RULE}") > 0) print l }} {{ print }}' \\
+        /etc/xdg/openbox/rc.xml > /home/student/.config/openbox/rc.xml
+      chown student:student /home/student/.config/openbox/rc.xml
       curl -fsSL -o /tmp/install.sh {raw}
       su - student -c "TK_VERSION={tk8s_version} sh /tmp/install.sh"
       # Fill tk8s's shared image store (tk8s >= v2026.10.3) as the student: the node image, the
