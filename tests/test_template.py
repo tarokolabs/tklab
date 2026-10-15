@@ -51,6 +51,10 @@ def test_the_session_is_the_browser():
     assert "openbox &" in xsession
     assert "exec firefox" in xsession or "firefox" in xsession.split("openbox &", 1)[1]
     assert "xfce4-session" not in xsession
+    # openbox opens the Firefox window maximized: the session is the browser, nothing else to see
+    assert "/home/student/.config/openbox/rc.xml" in ud
+    assert '<application class="firefox-esr" type="normal">' in ud
+    assert "<maximized>yes</maximized>" in ud
 
 
 def cfg(node="pve-node7", k8s="1.37.0"):
