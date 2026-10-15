@@ -86,7 +86,7 @@ write_files:
       sed -i '/ swap / s/^/#/' /etc/fstab
       # openbox opens the Firefox window maximized: the session is the browser, there is
       # nothing else to see. The rule goes into the student's copy of the default rc.xml.
-      install -d -o student -g student /home/student/.config/openbox
+      install -d -o student -g student /home/student/.config /home/student/.config/openbox
       awk '/<\\/applications>/ {{ while ((getline l < "{RULE}") > 0) print l }} {{ print }}' \\
         /etc/xdg/openbox/rc.xml > /home/student/.config/openbox/rc.xml
       chown student:student /home/student/.config/openbox/rc.xml
