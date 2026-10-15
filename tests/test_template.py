@@ -6,11 +6,13 @@ from .fakes import FakePve
 QUIET = {"log": lambda *_: None}
 
 
-def test_user_data_installs_desktop_tk8s_and_prepulls_image():
+def test_user_data_installs_browser_session_tk8s_and_prepulls_image():
     ud = template.user_data("v2026.10.0", "1.37.0")
     assert ud.startswith("#cloud-config\n")
-    for pkg in ("qemu-guest-agent", "podman", "xfce4", "xrdp", "xorgxrdp", "firefox-esr"):
+    for pkg in ("qemu-guest-agent", "podman", "xrdp", "xorgxrdp", "firefox-esr", "openbox"):
         assert f"- {pkg}" in ud
+    assert "- fonts-noto-cjk" in ud  # Chinese pages render in the browser
+    assert "xfce4" not in ud and "lightdm" not in ud
     assert "TK_VERSION=v2026.10.0 sh" in ud
     # the shared image store (tk8s >= v2026.10.3) is filled as the student, after tk8s is installed:
     # /opt/taroko ends up owned by the student uid every clone's student shares, and a clone creates
@@ -37,7 +39,18 @@ def test_user_data_installs_desktop_tk8s_and_prepulls_image():
     assert "cloud-init clean --logs --machine-id" in ud
     # a fresh cloud image boots with ip_forward=0 and node netns inherit that at creation
     assert "net.ipv4.ip_forward = 1" in ud and "/etc/sysctl.d/80-tklab.conf" in ud
-    assert "systemctl disable lightdm" in ud
+
+
+def test_the_session_is_the_browser():
+    """xrdp runs ~/.xsession for the student; the session, and so the RDP connection, ends when
+    the script does. openbox gives the Firefox window a frame with a close button, Firefox runs
+    in the foreground, so closing it closes the connection."""
+    ud = template.user_data("v2026.10.0", None)
+    start = ud.index("path: /home/student/.xsession")
+    xsession = ud[start : ud.index("- path:", start + 1)]
+    assert "openbox &" in xsession
+    assert "exec firefox" in xsession or "firefox" in xsession.split("openbox &", 1)[1]
+    assert "xfce4-session" not in xsession
 
 
 def cfg(node="pve-node7", k8s="1.37.0"):

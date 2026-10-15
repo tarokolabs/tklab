@@ -1,8 +1,8 @@
 """Build the student VM template from the Debian cloud image through the PVE API.
 
 The image is imported on pve.storage, a cloud-init snippet (placed on the storage by the
-operator: PVE's upload endpoint does not accept snippets) installs tk8s, the desktop and
-xrdp on first boot and powers the VM off, then the VM becomes the template classes clone.
+operator: PVE's upload endpoint does not accept snippets) installs tk8s, xrdp and a browser
+session on first boot and powers the VM off, then the VM becomes the template classes clone.
 """
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ def user_data(tk8s_version: str, k8s: str | None) -> str:
     pull = f"tkctl pull images --k8s {k8s}" if k8s else "tkctl pull images"
     return f"""#cloud-config
 # tklab template: tk8s preinstalled, every cluster image pre-pulled into its shared image
-# store, CNI plugins installed, XFCE desktop over xrdp.
+# store, CNI plugins installed, a browser session over xrdp (no desktop: the RDP connection
+# is Firefox, closing it ends the session).
 # The student user gets its password per clone (PVE cloud-init cipassword).
 package_update: true
 package_upgrade: true
@@ -36,11 +37,11 @@ packages:
   - podman
   - git
   - curl
-  - xfce4
-  - xfce4-terminal
   - xrdp
   - xorgxrdp
+  - openbox
   - firefox-esr
+  - fonts-noto-cjk
   - dbus-x11
 ssh_pwauth: true
 users:
@@ -58,8 +59,15 @@ write_files:
     content: "net.ipv4.ip_forward = 1\\n"
   - path: /home/student/.xsession
     owner: student:student
+    permissions: "0755"
     defer: true
-    content: "xfce4-session\\n"
+    # xrdp runs this for the student and ends the session when it exits: openbox gives the
+    # Firefox window a frame with a close button, Firefox runs in the foreground, so closing
+    # the browser closes the connection. A reconnect after a dropped connection resumes it.
+    content: |
+      #!/bin/sh
+      openbox &
+      exec firefox --new-window about:blank
   - path: /usr/local/sbin/tklab-build
     permissions: "0755"
     content: |
@@ -68,7 +76,6 @@ write_files:
       set -e
       systemctl enable --now qemu-guest-agent
       systemctl enable xrdp
-      systemctl disable lightdm || true
       swapoff -a
       sed -i '/ swap / s/^/#/' /etc/fstab
       curl -fsSL -o /tmp/install.sh {raw}
