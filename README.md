@@ -17,7 +17,7 @@ tklab create template  # 從 Debian cloud image 做範本，做一次
 ```
 tklab init [pve|guacamole] [--manual] [-f FILE] [--pve-url … --storage … --guacamole-url …]
 tklab create template [--k8s 1.36.5] [--node NAME]
-tklab create class <班名> --students N [--k8s] [--expires 2026-10-20] [--node NAME|auto] [--cores N] [--memory MiB]
+tklab create class <班名> --students N [--init-cluster default|ha|FILE.yaml] [--expires 2026-10-20] [--node NAME|auto] [--cores N] [--memory MiB]
 tklab create class -f k8s-101.toml
 tklab get classes
 tklab describe class <班名> [--roster] [-o toml]
@@ -30,7 +30,7 @@ tklab delete class --expired [--yes]
 ```toml
 name = "k8s-101"
 expires = 2026-10-20
-k8s = true
+init_cluster = "default"
 students = ["alice", "bob", "carol"]
 
 [vm]
@@ -39,11 +39,14 @@ memory = 16384
 [[students_override]]
 name = "carol"
 memory = 32768
+init_cluster = "ha"
 ```
 
 `describe class <班名> -o toml` 會把現有班級倒回這種格式，改個班名就能再開一班。
 
-`--k8s`（檔案裡 `k8s = true`）會在每台 VM 連上 Guacamole 之後，透過 qemu-guest-agent 以 `student` 身分執行 `tkctl create cluster tk8s && tkctl use cluster tk8s && tkctl verify cluster tk8s`，學員一登入就有一個驗證過的叢集，`~/.kube/config` 已指好。同一個 PVE 節點上同時最多建兩個叢集（更多會互搶拉 image 的頻寬而逾時），每個最多等 20 分鐘；VM 內的輸出在 `/var/log/tklab-k8s.log`。失敗只會記在名冊的 error 欄，VM 與帳號都留著，重跑同一道 `create class` 只會重做叢集那一步。VM 的 tag 多一個 `k8s`，`describe -o toml` 會把它寫回去。這一步需要開班用的角色有 `VM.GuestAgent.Unrestricted`（舊安裝重跑一次 `tklab init pve` 就會補上）。
+`--init-cluster`（檔案裡 `init_cluster`）會在每台 VM 連上 Guacamole 之後，透過 qemu-guest-agent 以 `student` 身分建一個叢集並 `tkctl use`、`tkctl verify`，學員一登入就有一個驗證過的叢集，`~/.kube/config` 已指好。值有三種寫法，依字面分辨：`default` 是 tkctl 的預設叢集（`tkctl create cluster tk8s`）；一個 tk8s 的 preset 名字（小寫字母、數字與 `-`，例如 `ha`）會原樣交給 `tkctl create cluster tk8s --preset <名字>`，名單與內容看 [tk8s 的 README](https://github.com/tarokolabs/tk8s#readme)，tklab 自己不認得任何名字，打錯的在 VM 裡被 tkctl 拒絕；以 `.yaml` 結尾的路徑是一份 tk8s 的 `cluster.yaml`（檔案裡相對於班級檔，旗標相對於目前目錄），tklab 會先確認檔案存在、不超過 60 KiB、`metadata:` 底下直接有一行 `name:`（它用這個名字跑 `use` 與 `verify`，沒有 YAML 剖析器），再透過 guest agent 寫到 VM 的 `/var/lib/tklab/cluster.yaml` 跑 `tkctl create cluster -f`。班級檔頂層的 `init_cluster` 是全班預設，`[[students_override]]` 裡的 `init_cluster` 蓋過單一學員；沒給就不建叢集。preset 要範本裝的是 tk8s v2026.10.12 以上（`--preset` 從這版才有），太舊的範本只會在名冊的 error 欄看到 tkctl 的 `unrecognized arguments`。舊的 `--k8s` 與 `k8s = true` 已改名為 `--init-cluster default` 與 `init_cluster = "default"`。
+
+同一個 PVE 節點上同時最多建兩個叢集（更多會互搶拉 image 的頻寬而逾時），每個最多等 20 分鐘；VM 內的輸出在 `/var/log/tklab-k8s.log`。失敗只會記在名冊的 error 欄，VM 與帳號都留著，重跑同一道 `create class` 只會重做叢集那一步：先以現在的值重寫 VM 的 tag，再 `tkctl delete cluster` 掉上一次留下的叢集重建（tkctl 遇到半個舊叢集會接著跑舊拓樸、不套新值），cluster.yaml 也會重新送一次；換了檔案裡的叢集名字時，舊名字的叢集留在 VM 裡，請自己 `tkctl delete cluster`。VM 的 tag 多一個 `k8s-<值>`（檔案是 `k8s-file`），`describe -o toml` 會把它寫回每位學員的 `[[students_override]]`；來自檔案的只能寫佔位值 `init_cluster = "cluster.yaml"` 加一行註解，請把它指回原本的檔案。這一步需要開班用的角色有 `VM.GuestAgent.Unrestricted`（舊安裝重跑一次 `tklab init pve` 就會補上）。
 
 每位學員一台 `lab-<班名>-<學員>` 的 VM（tag `lab;class-<班名>;expires-<日期>`），Guacamole 一個帳號（有名字的學員用名字，編號的用 `<班名>-<編號>`）與兩條連線：`<班名>-<學員> SSH` 和 `<班名>-<學員> Browser`（RDP 進去就是一個 Firefox 視窗，關掉瀏覽器連線就結束；沒有桌面）。名冊（VMID、IP、Guacamole 帳密、VM 的 `student` 密碼、失敗原因）寫在 `$XDG_STATE_HOME/tklab/<班名>.csv`（預設 `~/.local/state/…`），權限 0600，`describe class --roster` 會印出來。
 
