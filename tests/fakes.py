@@ -29,6 +29,7 @@ class FakePve:
         avail=None,
         k8s_exit_for=None,
         k8s_hold=None,
+        fail_file_write_for=None,
     ):
         self.used = set(used)
         self.hidden = set(hidden)
@@ -44,6 +45,8 @@ class FakePve:
         self.avail = dict(avail or {})  # (node, storage) -> free bytes
         self.k8s_exit_for = dict(k8s_exit_for or {})  # vm name -> exit code (default 0)
         self.k8s_hold = k8s_hold  # threading.Event: commands stay running until it is set
+        self.fail_file_write_for = set(fail_file_write_for or ())
+        self.files = {}  # vmid -> (path, content) of the last agent file-write
         self._execs: dict[int, dict] = {}
         self.inflight: dict[str, int] = {}
         self.max_inflight: dict[str, int] = {}
@@ -156,6 +159,13 @@ class FakePve:
         self.inflight[node] = self.inflight.get(node, 0) + 1
         self.max_inflight[node] = max(self.max_inflight.get(node, 0), self.inflight[node])
         return pid
+
+    def agent_file_write(self, node, vmid, path, content):
+        name = self.vms[vmid]["name"]
+        if name in self.fail_file_write_for:
+            raise PveError(403, "no file-write")
+        self.calls.append(("file-write", vmid, path, content))
+        self.files[vmid] = (path, content)
 
     def agent_exec_status(self, node, vmid, pid):
         x = self._execs[pid]

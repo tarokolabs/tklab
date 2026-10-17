@@ -277,6 +277,14 @@ class Pve:
         data = self.request("POST", f"/nodes/{node}/qemu/{vmid}/agent/exec", {"command": command})
         return int(data["pid"])
 
+    def agent_file_write(self, node: str, vmid: int, path: str, content: str) -> None:
+        """Write `content` to `path` inside the guest (root-owned; at most 60 KiB)."""
+        self.request(
+            "POST",
+            f"/nodes/{node}/qemu/{vmid}/agent/file-write",
+            {"file": path, "content": content},
+        )
+
     def agent_exec_status(self, node: str, vmid: int, pid: int) -> dict:
         """{"exited": 0|1, "exitcode": N, ...} for a PID started by agent_exec."""
         return self.request("GET", f"/nodes/{node}/qemu/{vmid}/agent/exec-status", {"pid": pid})
