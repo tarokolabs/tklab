@@ -395,25 +395,50 @@ def test_init_403_hint_names_sys_modify(monkeypatch, capsys):
     assert rc == 1 and "Sys.Modify" in capsys.readouterr().err
 
 
-def test_create_k8s_flag_builds_clusters_and_is_exclusive_with_file(env, tmp_path, capsys):
-    rc, pve, _ = run(["create", "class", "k8s-101", "--students", "2", "--k8s"])
+def test_create_init_cluster_flag_builds_clusters_and_is_exclusive_with_file(env, tmp_path, capsys):
+    argv = ["create", "class", "k8s-101", "--students", "2", "--init-cluster", "ha"]
+    rc, pve, _ = run(argv)
     assert rc == 0
     assert sorted(c[1] for c in pve.calls if c[0] == "exec") == [3100, 3101]
+    assert "--preset ha" in next(c[2][2] for c in pve.calls if c[0] == "exec")
     assert "tk8s cluster ready" in capsys.readouterr().out
     f = tmp_path / "c.toml"
     f.write_text('name = "k8s-102"\ncount = 1\n')
-    rc, _, _ = run(["create", "class", "-f", str(f), "--k8s"])
+    rc, _, _ = run(["create", "class", "-f", str(f), "--init-cluster", "default"])
     assert rc == 2 and "cannot be combined" in capsys.readouterr().err
 
 
-def test_create_k8s_from_file_and_describe_toml_keeps_it(env, tmp_path, capsys):
+def test_create_rejects_the_old_k8s_flag(env, capsys):
+    with pytest.raises(SystemExit) as ei:
+        run(["create", "class", "k8s-101", "--students", "1", "--k8s"])
+    assert ei.value.code == 2 and "unrecognized arguments: --k8s" in capsys.readouterr().err
+
+
+def test_create_bad_init_cluster_fails_before_any_vm(env, capsys):
+    argv = ["create", "class", "k8s-101", "--students", "1", "--init-cluster", "HA"]
+    rc, pve, _ = run(argv)
+    assert rc == 2 and 'init_cluster must be "default"' in capsys.readouterr().err
+    assert not [c for c in pve.calls if c[0] == "clone"]
+
+
+def test_describe_toml_marks_file_clusters(env, tmp_path, capsys):
+    (tmp_path / "demo.yaml").write_text("metadata:\n  name: demo\n")
     f = tmp_path / "c.toml"
-    f.write_text('name = "k8s-103"\ncount = 1\nk8s = true\n')
+    f.write_text(
+        'name = "k8s-103"\ncount = 2\n[[students_override]]\nname = "02"\n'
+        'init_cluster = "demo.yaml"\n'
+    )
     rc, pve, _ = run(["create", "class", "-f", str(f)])
-    assert rc == 0 and [c[1] for c in pve.calls if c[0] == "exec"] == [3100]
+    assert rc == 0 and [c[1] for c in pve.calls if c[0] == "exec"] == [3101]
     capsys.readouterr()
     rc, _, _ = run(["describe", "class", "k8s-103", "-o", "toml"], pve=pve)
-    assert rc == 0 and "k8s = true" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert (
+        "# this student's cluster came from a cluster.yaml; point init_cluster at that file\n"
+        'init_cluster = "cluster.yaml"'
+    ) in out
+    assert out.count("init_cluster = ") == 1  # 01 has no cluster; the comment is not a key
 
 
 def test_init_without_admin_password_fails_before_writing_the_config(capsys):

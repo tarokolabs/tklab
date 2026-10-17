@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from pathlib import Path
 
@@ -10,7 +11,7 @@ VM = VmConfig()
 
 
 def flags(name, count, **kw):
-    kw = {"expires": None, "node": None, "cores": None, "memory": None, "k8s": False} | kw
+    kw = {"expires": None, "node": None, "cores": None, "memory": None, "init_cluster": None} | kw
     return classdef.from_flags(name, count, vm=VM, **kw)
 
 
@@ -127,21 +128,118 @@ def test_to_toml_round_trips(tmp_path):
     assert again == cd
 
 
-def test_k8s_defaults_off_and_follows_the_flag():
-    assert flags("k8s-101", 1).k8s is False
-    assert flags("k8s-101", 1, k8s=True).k8s is True
+def test_init_cluster_three_forms_from_flags(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert flags("k8s-101", 1).students[0].init_cluster is None
+    assert flags("k8s-101", 1, init_cluster="default").students[0].init_cluster == "default"
+    assert flags("k8s-101", 1, init_cluster="ha").students[0].init_cluster == "ha"
+    f = tmp_path / "ha.yaml"
+    f.write_text("apiVersion: tk8s/v1\nkind: Cluster\nmetadata:\n  name: ha\nspec:\n  nodes: []\n")
+    cd = flags("k8s-101", 1, init_cluster="ha.yaml")
+    assert cd.students[0].init_cluster == str(f)  # absolute, relative to the cwd
+    assert cd.wants_cluster and not flags("k8s-101", 1).wants_cluster
 
 
-def test_k8s_from_file_must_be_a_boolean(tmp_path):
-    cd = classdef.from_file(write(tmp_path, 'name = "a"\ncount = 1\nk8s = true\n'), vm=VM)
-    assert cd.k8s is True
-    with pytest.raises(classdef.ClassDefError, match="k8s must be true or false"):
-        classdef.from_file(write(tmp_path, 'name = "a"\ncount = 1\nk8s = "yes"\n'), vm=VM)
+@pytest.mark.parametrize("bad", ["HA", "ha.toml", "", "file", "my preset"])
+def test_init_cluster_rejects_other_values(bad):
+    want = (
+        'init_cluster must be "default", a tk8s preset name (lowercase letters, digits and -; '
+        f'not "file") or a .yaml file, got {bad!r}'
+    )
+    with pytest.raises(classdef.ClassDefError, match=re.escape(want)):
+        flags("k8s-101", 1, init_cluster=bad)
 
 
-def test_to_toml_keeps_k8s(tmp_path):
-    cd = flags("k8s-101", 2, k8s=True)
+def test_init_cluster_file_checks(tmp_path):
+    missing = tmp_path / "nope.yaml"
+    with pytest.raises(classdef.ClassDefError, match=f"init_cluster file not found: {missing}"):
+        flags("k8s-101", 1, init_cluster=str(missing))
+    big = tmp_path / "big.yaml"
+    big.write_text("metadata:\n  name: a\n" + "#" * 61440)
+    with pytest.raises(classdef.ClassDefError, match="is larger than 60 KiB"):
+        flags("k8s-101", 1, init_cluster=str(big))
+    nameless = tmp_path / "x.yaml"
+    nameless.write_text("spec:\n  nodes: []\n")
+    want = 'put the cluster name as "name:" directly under "metadata:"'
+    with pytest.raises(classdef.ClassDefError, match=want):
+        flags("k8s-101", 1, init_cluster=str(nameless))
+
+
+def test_cluster_name_reads_the_tk8s_readme_shapes():
+    text = "apiVersion: v1\nkind: Cluster\nmetadata:\n  name: tkdt\nspec: {}\n"
+    assert classdef.cluster_name(text) == "tkdt"
+    assert classdef.cluster_name('metadata:\n  labels: {}\n  name: "ha-2"\n') == "ha-2"
+    assert classdef.cluster_name("metadata:\n    name: 'x1'   # comment\n") == "x1"
+
+
+def test_cluster_name_ignores_names_outside_metadata():
+    assert classdef.cluster_name("metadata:\n  x: 1\nspec:\n  nodes:\n    - name: cp\n") is None
+    assert classdef.cluster_name("spec:\n  name: cp\nmetadata: {}\n") is None
+    assert classdef.cluster_name("metadata:\n  name: Bad_Name\n") is None
+
+
+def test_init_cluster_from_file_class_default_and_override(tmp_path):
+    (tmp_path / "carol.yaml").write_text("metadata:\n  name: carol\n")
+    text = (
+        'name = "k8s-101"\ninit_cluster = "default"\nstudents = ["alice", "bob", "carol"]\n'
+        '[[students_override]]\nname = "bob"\ninit_cluster = "ha"\n'
+        '[[students_override]]\nname = "carol"\ninit_cluster = "carol.yaml"\n'
+    )
+    cd = classdef.from_file(write(tmp_path, text), vm=VM)
+    carol = str(tmp_path / "carol.yaml")
+    assert [s.init_cluster for s in cd.students] == ["default", "ha", carol]
+
+
+def test_init_cluster_override_without_class_default(tmp_path):
+    text = (
+        'name = "a"\nstudents = ["x", "y"]\n'
+        '[[students_override]]\nname = "y"\ninit_cluster = "ha"\n'
+    )
+    cd = classdef.from_file(write(tmp_path, text), vm=VM)
+    assert [s.init_cluster for s in cd.students] == [None, "ha"]
+
+
+def test_init_cluster_file_errors_are_listed(tmp_path):
+    text = (
+        'name = "a"\ninit_cluster = 1\nk8s = true\nstudents = ["x"]\n'
+        '[[students_override]]\nname = "x"\ninit_cluster = true\n'
+    )
+    with pytest.raises(classdef.ClassDefError) as ei:
+        classdef.from_file(write(tmp_path, text), vm=VM)
+    msg = str(ei.value)
+    assert "init_cluster must be a string" in msg
+    assert "students_override[0].init_cluster must be a string" in msg
+    assert 'k8s is no longer a key; write init_cluster = "default"' in msg
+
+
+def test_to_toml_round_trips_init_cluster(tmp_path):
+    cd = flags("k8s-101", 2, init_cluster="ha")
     text = classdef.to_toml(cd)
-    assert "k8s = true" in text
+    assert text.count('init_cluster = "ha"') == 2 and "k8s = " not in text
     assert classdef.from_file(write(tmp_path, text), vm=VM) == cd
-    assert "k8s = " not in classdef.to_toml(flags("k8s-101", 2))
+    assert "init_cluster" not in classdef.to_toml(flags("k8s-101", 1))
+
+
+def test_to_toml_marks_the_file_placeholder():
+    s = classdef.Student("a", 8, 24576, 8192, "60G", init_cluster=classdef.FILE_PLACEHOLDER)
+    text = classdef.to_toml(classdef.ClassDef("c", (s,)))
+    assert (
+        "# this student's cluster came from a cluster.yaml; point init_cluster at that file\n"
+        'init_cluster = "cluster.yaml"\n'
+    ) in text
+
+
+def test_cluster_name_caps_the_length_like_tk8s():
+    assert classdef.cluster_name("metadata:\n  name: " + "a" * 16 + "\n") == "a" * 16
+    assert classdef.cluster_name("metadata:\n  name: " + "a" * 17 + "\n") is None
+
+
+def test_init_cluster_preset_name_caps_the_length_like_tk8s():
+    assert flags("k8s-101", 1, init_cluster="a" * 16).students[0].init_cluster == "a" * 16
+    with pytest.raises(classdef.ClassDefError, match="must be"):
+        flags("k8s-101", 1, init_cluster="a" * 17)
+
+
+def test_cluster_name_skips_comments_and_blank_lines():
+    assert classdef.cluster_name("metadata:  # the cluster\n  name: a\n") == "a"
+    assert classdef.cluster_name("metadata:\n# column-0 comment\n\n  name: b\nspec: {}\n") == "b"

@@ -9,8 +9,9 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from pathlib import Path
 
-from . import roster
+from . import classdef, roster
 from .classdef import ClassDef, Student, vm_name
 from .config import Config
 from .guac import RDP_PARAMS, SSH_PARAMS, GuacError
@@ -26,13 +27,8 @@ K8S_TIMEOUT = 1200  # a cluster pulls its images from the internet; 20 min cover
 K8S_POLL = 10
 K8S_PER_NODE = 2  # more clusters at once on one PVE node starve each other during image pulls
 K8S_LOG = "/var/log/tklab-k8s.log"
-K8S_COMMAND = [
-    "/bin/bash",
-    "-c",
-    f"/usr/sbin/runuser -u {STUDENT_USER} -- bash -lc "
-    "'tkctl create cluster tk8s && tkctl use cluster tk8s && tkctl verify cluster tk8s'"
-    f" > {K8S_LOG} 2>&1",
-]
+K8S_FILE = "/var/lib/tklab/cluster.yaml"  # where a student's cluster.yaml lands in the VM
+K8S_BUSY = 75  # a rerun's exit code when the previous attempt's tkctl is still running
 SIZE_RE = re.compile(r"^(\d+)([KMGT])$")
 UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 
@@ -57,13 +53,48 @@ def size_bytes(size: str) -> int:
     return int(m.group(1)) * UNITS[m.group(2)]
 
 
-def _tags(cd: ClassDef) -> str:
+def k8s_command(init_cluster: str, cluster_name: str, *, rerun: bool) -> list[str]:
+    """The guest-agent command that builds the student's cluster: tkctl as `student`, output
+    to K8S_LOG. A cluster.yaml is made world-readable first (the agent writes it 0666); a rerun
+    deletes what the failed attempt left, since tkctl would resume the old topology, but not
+    while that attempt is still running (a timed-out build keeps going in the VM)."""
+    if init_cluster == "default":
+        create = "tkctl create cluster tk8s"
+    elif classdef.is_file(init_cluster):
+        create = f"tkctl create cluster -f {K8S_FILE}"
+    else:
+        create = f"tkctl create cluster tk8s --preset {init_cluster}"
+    delete = f"tkctl delete cluster {cluster_name} --yes; " if rerun else ""
+    inner = (
+        f"{delete}{create} && tkctl use cluster {cluster_name} && "
+        f"tkctl verify cluster {cluster_name}"
+    )
+    root = f"chmod 0644 {K8S_FILE} && " if classdef.is_file(init_cluster) else ""
+    if rerun:  # [t] so pgrep does not match this very command line
+        root = f"pgrep -f '[t]kctl create cluster' >/dev/null && exit {K8S_BUSY}; " + root
+    script = f"{root}/usr/sbin/runuser -u {STUDENT_USER} -- bash -lc '{inner}' > {K8S_LOG} 2>&1"
+    return ["/bin/bash", "-c", script]
+
+
+def _tags(cd: ClassDef, s: Student) -> str:
     t = ["lab", f"class-{cd.name}"]
     if cd.expires:
         t.append(f"expires-{cd.expires.isoformat()}")
-    if cd.k8s:
-        t.append("k8s")
+    if s.init_cluster is not None:
+        t.append("k8s-file" if classdef.is_file(s.init_cluster) else f"k8s-{s.init_cluster}")
     return ";".join(t)
+
+
+def init_cluster_of(vm: dict) -> str | None:
+    """The init_cluster a VM's tag records; a bare `k8s` tag (before init_cluster) is default."""
+    for t in tags(vm):
+        if t == "k8s":
+            return "default"
+        if t == "k8s-file":
+            return classdef.FILE_PLACEHOLDER
+        if t.startswith("k8s-"):
+            return t.removeprefix("k8s-")
+    return None
 
 
 def _tag_value(vm: dict, prefix: str) -> str | None:
@@ -221,7 +252,7 @@ def _setup(c: _Class, s: Student, e: roster.Entry) -> roster.Entry:
             cores=s.cores,
             memory=s.memory,
             balloon=s.balloon,
-            tags=_tags(c.cd),
+            tags=_tags(c.cd, s),
         )
         if want > c.template_disk:
             resize = c.pve.resize(e.node, e.vmid, "scsi0", s.disk)
@@ -278,18 +309,35 @@ def _connect(c: _Class, s: Student, e: roster.Entry, *, resume: bool) -> roster.
     return _entry(s, e.vmid, e.node, ip, login, "", gp=guac_password, vp=e.vm_password)
 
 
-def _k8s(c: _Class, s: Student, e: roster.Entry) -> roster.Entry:
-    """Build the tk8s cluster inside a connected VM through the guest agent; keeps e's secrets."""
+def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool, retag: bool) -> roster.Entry:
+    """Build the tk8s cluster inside a connected VM through the guest agent; keeps e's secrets.
+    Any resumed student (`retag`) first gets the tag rewritten, since the instructor may have
+    changed the value since the clone; a rerun of the cluster step itself (the roster says
+    `k8s:`) also has the command delete the previous attempt's cluster."""
     name = vm_name(c.cd.name, s)
+    assert s.init_cluster is not None
 
     def outcome(why: str) -> roster.Entry:
         return _entry(
             s, e.vmid, e.node, e.ip, e.guac_user, why, gp=e.guac_password, vp=e.vm_password
         )
 
+    text = None
+    cluster = "tk8s"
+    if classdef.is_file(s.init_cluster):
+        try:
+            text = Path(s.init_cluster).read_text()
+        except OSError as err:
+            return outcome(f"k8s: cannot read {s.init_cluster}: {err}")
+        cluster = classdef.cluster_name(text) or "tk8s"  # classdef checked it; keep going
     with c.k8s_slot(e.node):
         try:
-            pid = c.pve.agent_exec(e.node, e.vmid, K8S_COMMAND)
+            if retag:
+                c.pve.set_config(e.node, e.vmid, tags=_tags(c.cd, s))
+            if text is not None:
+                c.pve.agent_file_write(e.node, e.vmid, K8S_FILE, text)
+            command = k8s_command(s.init_cluster, cluster, rerun=rerun)
+            pid = c.pve.agent_exec(e.node, e.vmid, command)
             elapsed = 0
             while True:
                 status = c.pve.agent_exec_status(e.node, e.vmid, pid)
@@ -304,6 +352,11 @@ def _k8s(c: _Class, s: Student, e: roster.Entry) -> roster.Entry:
         except PveError as err:
             return outcome(f"k8s: {err}")
     code = int(status.get("exitcode", 1))
+    if rerun and code == K8S_BUSY:
+        return outcome(
+            f"k8s: the previous attempt is still running in the VM (see {K8S_LOG}); "
+            "rerun when it is done"
+        )
     if code:
         return outcome(f"k8s: exit {code}, see {K8S_LOG} in the VM")
     c.log(f"{name}: tk8s cluster ready")
@@ -320,7 +373,19 @@ def _provision_one(
         if previous is not None and previous.vmid:
             e = previous
             if previous.error.startswith("k8s:"):
-                return _k8s(c, s, previous)
+                if s.init_cluster is None:  # the instructor dropped the cluster for this student
+                    c.pve.set_config(e.node, e.vmid, tags=_tags(c.cd, s))
+                    return _entry(
+                        s,
+                        e.vmid,
+                        e.node,
+                        e.ip,
+                        e.guac_user,
+                        "",
+                        gp=e.guac_password,
+                        vp=e.vm_password,
+                    )
+                return _k8s(c, s, previous, rerun=True, retag=True)
             if previous.error.startswith("vm setup"):
                 current = e = _setup(c, s, previous)
                 if e.error:
@@ -330,14 +395,24 @@ def _provision_one(
             if e.error:
                 return e
         current = e = _connect(c, s, e, resume=previous is not None)
-        if e.error or not c.cd.k8s:
+        if e.error or s.init_cluster is None:
             return e
-        return _k8s(c, s, e)
+        return _k8s(c, s, e, rerun=False, retag=previous is not None)
     except Exception as err:  # one student's surprise must not sink the class
-        vmid = current.vmid if current else 0
-        node = current.node if current else c.node_for(index)
-        vp = current.vm_password if current else ""
-        return _entry(s, vmid, node, "", "", f"unexpected {type(err).__name__}: {err}", vp=vp)
+        why = f"unexpected {type(err).__name__}: {err}"
+        if current is None:
+            return _entry(s, 0, c.node_for(index), "", "", why)
+        # keep what the roster already knows (address, login, passwords): the rerun needs them
+        return _entry(
+            s,
+            current.vmid,
+            current.node,
+            current.ip,
+            current.guac_user,
+            why,
+            gp=current.guac_password,
+            vp=current.vm_password,
+        )
 
 
 def create(
@@ -466,7 +541,6 @@ def describe(class_name: str, cfg: Config, pve) -> ClassDef:
     students = []
     exp = None
     nodes = set()
-    k8s = False
     for v in vms:
         c = pve.vm_config(v["node"], v["vmid"])
         students.append(
@@ -476,11 +550,11 @@ def describe(class_name: str, cfg: Config, pve) -> ClassDef:
                 int(c.get("memory", cfg.vm.memory)),
                 int(c.get("balloon", cfg.vm.balloon)),
                 _disk_size(c, cfg.vm.disk),
+                init_cluster=init_cluster_of(v),
             )
         )
         e = _tag_value(v, "expires-")
         exp = date.fromisoformat(e) if e else exp
         nodes.add(v["node"])
-        k8s = k8s or "k8s" in tags(v)
     node = nodes.pop() if len(nodes) == 1 else None
-    return ClassDef(class_name, tuple(students), exp, node, k8s=k8s)
+    return ClassDef(class_name, tuple(students), exp, node)

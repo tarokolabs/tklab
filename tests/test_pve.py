@@ -395,3 +395,13 @@ def test_agent_exec_posts_the_command_as_a_list_and_reads_status():
     # PVE takes array parameters as the same key repeated
     assert body == "command=bash&command=-c&command=echo+hi+%3E+%2Ftmp%2Fx"
     assert op.calls[1][0] == ("GET", "/nodes/n1/qemu/3101/agent/exec-status")
+
+
+def test_agent_file_write_posts_file_and_content():
+    routes = {("POST", "/nodes/pve-node7/qemu/3102/agent/file-write"): None}
+    c, op = client(routes)
+    c.agent_file_write("pve-node7", 3102, "/var/lib/tklab/cluster.yaml", "metadata:\n  name: a\n")
+    ((key, body, _),) = op.calls
+    assert key == ("POST", "/nodes/pve-node7/qemu/3102/agent/file-write")
+    assert "file=%2Fvar%2Flib%2Ftklab%2Fcluster.yaml" in body
+    assert "content=metadata%3A%0A++name%3A+a%0A" in body
