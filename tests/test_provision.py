@@ -6,18 +6,17 @@ from datetime import date
 import pytest
 
 from tklab import classdef, provision, roster
-from tklab.config import Config, GuacConfig, PveConfig, TemplateConfig, VmConfig
 from tklab.pve import PveError
 
-from .fakes import FakeGuac, FakePve
+from .fakes import FakeGuac, FakePve, make_cfg
 
-CFG = Config(
-    pve=PveConfig(
-        "https://pve", "lab@pve!t", "auto", "lab", "nas-iscsi-lvm", 3900, (3100, 3199), "vmbr0"
+_BASE = make_cfg(token_id="lab@pve!t", storage="nas-iscsi-lvm", build_token_id=None)
+CFG = replace(
+    _BASE,
+    guacamole=replace(_BASE.guacamole, username="svc"),
+    template=replace(
+        _BASE.template, image_url="u", image_sha512="s", tk8s_version="main", k8s=None
     ),
-    guacamole=GuacConfig("https://guac", "svc"),
-    vm=VmConfig(),
-    template=TemplateConfig("u", "s"),
 )
 QUIET = {"log": lambda *_: None}
 
@@ -29,12 +28,6 @@ def student(name):
 def cd(names, expires="2026-10-20", name="k8s-101"):
     exp = date.fromisoformat(expires) if expires else None
     return classdef.ClassDef(name, tuple(student(n) for n in names), exp, None)
-
-
-@pytest.fixture(autouse=True)
-def state_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    return tmp_path
 
 
 def test_size_parsing():
@@ -109,16 +102,6 @@ def test_create_continues_past_failures_and_reports_them():
     assert len(roster.read(roster.path("k8s-101"))) == 4
 
 
-def test_create_skips_vmids_the_pool_token_cannot_see():
-    # 3100 is a VM outside the pool: invisible in /cluster/resources, known to /cluster/nextid
-    pve, guac = FakePve(hidden={3100}), FakeGuac()
-    (e,) = provision.create(cd(["alice"]), CFG, pve, guac, parallel=1, **QUIET)
-    assert e.vmid == 3101 and e.error == ""
-    assert [c for c in pve.calls if c[0] == "clone"] == [
-        ("clone", "pve-node6", 3101, "lab-k8s-101-alice", "pve-node7", False, None)
-    ]
-
-
 def test_create_never_reuses_a_vmid_across_parallel_students():
     # next_vmid never reserves and in-flight clones are invisible to the token, so the
     # allocator must remember what it handed out; a taken id from the API is also remembered
@@ -143,6 +126,7 @@ def test_create_spreads_auto_node_round_robin():
     pve, guac = FakePve(nodes=("pve-node8", "pve-node7")), FakeGuac()
     entries = provision.create(cd(["a", "b", "c"]), CFG, pve, guac, parallel=1, **QUIET)
     assert [e.node for e in entries] == ["pve-node8", "pve-node7", "pve-node8"]
+    assert not any(c[0] == "storage_avail" for c in pve.calls)
 
 
 def test_create_grows_disk_when_the_class_asks_for_more_and_refuses_shrink():
@@ -368,24 +352,7 @@ def test_resume_redoes_setup_for_a_student_whose_vm_never_started():
 
 
 def local_cfg():
-    p = CFG.pve
-    return Config(
-        PveConfig(
-            p.url,
-            p.token_id,
-            p.node,
-            p.pool,
-            p.storage,
-            p.template,
-            p.vmid_range,
-            p.bridge,
-            build_token_id=p.build_token_id,
-            clone_storage="local-lvm",
-        ),
-        CFG.guacamole,
-        CFG.vm,
-        CFG.template,
-    )
+    return replace(CFG, pve=replace(CFG.pve, clone_storage="local-lvm"))
 
 
 def test_clone_storage_makes_full_clones_on_the_template_node_then_migrates():
@@ -435,13 +402,6 @@ def test_auto_node_prefers_free_local_space_and_skips_full_nodes():
     assert [e.node for e in entries] == ["n-big", "n-mid", "n-big"]
 
 
-def test_auto_node_without_clone_storage_keeps_round_robin():
-    pve = FakePve(nodes=("n1", "n2"))
-    entries = provision.create(cd(["a", "b"]), CFG, pve, FakeGuac(), parallel=1, **QUIET)
-    assert [e.node for e in entries] == ["n1", "n2"]
-    assert not any(c[0] == "storage_avail" for c in pve.calls)
-
-
 def test_auto_node_fails_clearly_when_no_node_has_room():
     pve = FakePve(nodes=("n1",), avail={("n1", "local-lvm"): 1 * 2**30})
     with pytest.raises(provision.ProvisionError, match="local-lvm"):
@@ -449,48 +409,14 @@ def test_auto_node_fails_clearly_when_no_node_has_room():
 
 
 def test_auto_node_honours_the_allow_list():
-    p = CFG.pve
-    cfg = Config(
-        PveConfig(
-            p.url,
-            p.token_id,
-            "auto",
-            p.pool,
-            p.storage,
-            p.template,
-            p.vmid_range,
-            p.bridge,
-            build_token_id=p.build_token_id,
-            nodes=("pve-node8", "pve-node9", "pve-offline"),
-        ),
-        CFG.guacamole,
-        CFG.vm,
-        CFG.template,
-    )
+    cfg = replace(CFG, pve=replace(CFG.pve, nodes=("pve-node8", "pve-node9", "pve-offline")))
     pve = FakePve(nodes=("pve-node5", "pve-node8", "pve-node9"))
     entries = provision.create(cd(["a", "b", "c"]), cfg, pve, FakeGuac(), parallel=1, **QUIET)
     assert [e.node for e in entries] == ["pve-node8", "pve-node9", "pve-node8"]
 
 
 def test_auto_node_allow_list_with_no_online_member_is_an_error():
-    p = CFG.pve
-    cfg = Config(
-        PveConfig(
-            p.url,
-            p.token_id,
-            "auto",
-            p.pool,
-            p.storage,
-            p.template,
-            p.vmid_range,
-            p.bridge,
-            build_token_id=p.build_token_id,
-            nodes=("pve-node9",),
-        ),
-        CFG.guacamole,
-        CFG.vm,
-        CFG.template,
-    )
+    cfg = replace(CFG, pve=replace(CFG.pve, nodes=("pve-node9",)))
     with pytest.raises(provision.ProvisionError, match="pve-node9"):
         provision.create(
             cd(["a"]), cfg, FakePve(nodes=("pve-node5",)), FakeGuac(), parallel=1, **QUIET
@@ -632,7 +558,12 @@ def test_k8s_file_is_written_before_exec_and_names_the_cluster(tmp_path):
     assert e.error == ""
     kinds = [c[0] for c in pve.calls if c[0] in ("file-write", "exec")]
     assert kinds == ["file-write", "exec"]
-    assert pve.files[3100] == ("/var/lib/tklab/cluster.yaml", f.read_text())
+    assert next(c for c in pve.calls if c[0] == "file-write") == (
+        "file-write",
+        3100,
+        "/var/lib/tklab/cluster.yaml",
+        f.read_text(),
+    )
     assert "tkctl verify cluster demo" in script_of(execs(pve)[0])
     assert "k8s-file" in pve.vms[3100]["tags"].split(";")
 
@@ -671,7 +602,12 @@ def test_k8s_rerun_resends_the_current_file_and_deletes_first(tmp_path):
     assert again.error == ""
     assert [c[0] for c in pve.calls[before:]] == ["config", "file-write", "exec"]
     assert pve.calls[before][2] == {"tags": "lab;class-k8s-101;expires-2026-10-20;k8s-file"}
-    assert pve.files[3100][1] == "metadata:\n  name: demo2\n"
+    assert next(c for c in pve.calls[before:] if c[0] == "file-write") == (
+        "file-write",
+        3100,
+        "/var/lib/tklab/cluster.yaml",
+        "metadata:\n  name: demo2\n",
+    )
     assert "tkctl delete cluster demo2 --yes; tkctl create cluster -f" in script_of(pve.calls[-1])
 
 

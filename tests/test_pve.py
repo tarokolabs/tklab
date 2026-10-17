@@ -10,18 +10,6 @@ from tklab import pve
 BASE = "https://pve:8006/api2/json"
 
 
-class FakeResp(BytesIO):
-    def __init__(self, obj, status=200):
-        super().__init__(json.dumps(obj).encode())
-        self.status = status
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
 def opener_with(routes):
     """routes: {(METHOD, path): payload | callable(req) -> payload | Exception}; records calls."""
     calls = []
@@ -36,7 +24,7 @@ def opener_with(routes):
         r = r(req) if callable(r) else r
         if isinstance(r, Exception):
             raise r
-        return FakeResp({"data": r})
+        return BytesIO(json.dumps({"data": r}).encode())
 
     open_.calls = calls
     return open_

@@ -1,31 +1,16 @@
+from dataclasses import replace
+from functools import partial
+
 import pytest
 
 from tklab import setup
-from tklab.config import Config, GuacConfig, PveConfig, TemplateConfig, VmConfig
 from tklab.pve import PveError
 
-from .fakes import FakePveAdmin
+from .fakes import FakePveAdmin, TokenClient, make_cfg
 
 
 def cfg(node="auto"):
-    return Config(
-        PveConfig(
-            "https://pve",
-            "lab@pve!tklab",
-            node,
-            "lab",
-            "nas-nfs",
-            3900,
-            (3100, 3199),
-            "vmbr0",
-            build_token_id="lab@pve!tklab-build",
-        ),
-        GuacConfig("https://guac", "tklab"),
-        VmConfig(),
-        TemplateConfig(
-            "https://x/debian-13-genericcloud-amd64.qcow2", "deadbeef", "v2026.10.1", "1.37.0"
-        ),
-    )
+    return make_cfg(node=node)
 
 
 def test_acl_plan_matches_the_spec():
@@ -123,23 +108,7 @@ def test_manual_pve_script():
 
 def test_acl_plan_and_manual_cover_the_clone_storage():
     c = cfg("n1")
-    local = Config(
-        PveConfig(
-            c.pve.url,
-            c.pve.token_id,
-            c.pve.node,
-            c.pve.pool,
-            c.pve.storage,
-            c.pve.template,
-            c.pve.vmid_range,
-            c.pve.bridge,
-            build_token_id=c.pve.build_token_id,
-            clone_storage="local-lvm",
-        ),
-        c.guacamole,
-        c.vm,
-        c.template,
-    )
+    local = replace(c, pve=replace(c.pve, clone_storage="local-lvm"))
     plan = setup.acl_plan(local, ["n1"])
     assert ("/storage/local-lvm", "TklabDisk", "lab@pve!tklab") in plan
     assert ("/storage/local-lvm", "TklabDisk", "lab@pve") in plan
@@ -214,14 +183,7 @@ def test_reconcile_pve_replaces_a_token_whose_secret_in_env_does_not_work(tmp_pa
 def test_pve_token_works_asks_version_with_the_token():
     seen = []
 
-    class Client:
-        def __init__(self, url, token_id, secret, *, ca_file=None):
-            seen.append((url, token_id, secret, ca_file))
-
-        def request(self, method, path, params=None):
-            if seen[-1][2] == "bad":
-                raise PveError(401, "invalid token")
-            return {"version": "9.2"}
+    Client = partial(TokenClient, calls=seen)
 
     check = setup.pve_token_works(cfg(), ca_file="/ca.pem", make_client=Client)
     assert check("tklab", "good") is True and check("tklab", "bad") is False
@@ -229,18 +191,14 @@ def test_pve_token_works_asks_version_with_the_token():
 
 
 def test_pve_token_works_only_treats_a_rejection_as_a_bad_secret():
-    class Client:
-        def __init__(self, url, token_id, secret, *, ca_file=None):
-            self.secret = secret
-
-        def request(self, method, path, params=None):
-            if self.secret == "bad":
-                raise PveError(401, "invalid token")
-            if self.secret == "down":
-                raise PveError(0, "connection refused")
-            if self.secret == "proxy":
-                raise PveError(502, "bad gateway")
-            return {}
+    Client = partial(
+        TokenClient,
+        errors={
+            "bad": PveError(401, "invalid token"),
+            "down": PveError(0, "connection refused"),
+            "proxy": PveError(502, "bad gateway"),
+        },
+    )
 
     check = setup.pve_token_works(cfg(), ca_file=None, make_client=Client)
     assert check("tklab", "bad") is False
