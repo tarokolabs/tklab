@@ -209,7 +209,7 @@ class _Init:
         return "written so far: " + ", ".join(self.written) if self.written else "nothing written"
 
     def interactive(self) -> setup.Answers:
-        answers, _, _ = prompt.ask(
+        answers = prompt.ask(
             admin_factory=self.admin_factory,
             ask_text=self.ask_text,
             ask_secret=self.ask_secret,

@@ -116,6 +116,38 @@ def _has(pve, node: str, storage: str, content: str, filename: str) -> bool:
     return any(v.get("volid") == volid for v in pve.storage_content(node, storage, content))
 
 
+def _snippet_ready(cfg: Config, pve, node: str, data: str, log) -> bool:
+    """The cloud-init snippet with these settings is on the storage. It bakes in tk8s_version
+    and the pre-pull version, so a copy left from an earlier build would silently build with
+    the earlier settings. A mounted snippets/ is rewritten in place; otherwise the local copy
+    made for the operator is the reference and the operator copies it over."""
+    storage = cfg.pve.storage
+    on_storage = _has(pve, node, storage, "snippets", SNIPPET)
+    if cfg.template.snippets_dir:
+        target = Path(cfg.template.snippets_dir) / SNIPPET
+        if not target.exists() or target.read_text() != data:
+            target.write_text(data)
+            log(f"wrote {target}")
+        if not _has(pve, node, storage, "snippets", SNIPPET):
+            log(f"{target} is not visible as {storage}:snippets/{SNIPPET}; check the mount")
+            return False
+        return True
+    local = config.state_dir() / SNIPPET
+    stale = on_storage and local.exists() and local.read_text() != data
+    if on_storage and not stale:
+        return True
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(data)
+    log(f"wrote {local}")
+    if stale:
+        log(f"settings changed since {storage}:snippets/{SNIPPET} was copied; replace it")
+    else:
+        log("PVE cannot receive snippets over the API; copy it onto the storage once, e.g.")
+    log(f"  scp {local} root@<pve-node>:/mnt/pve/{storage}/snippets/")
+    log("then run `tklab create template` again")
+    return False
+
+
 def build(cfg: Config, pve, *, k8s: str | None, node: str | None, log=print) -> int:
     t = cfg.template
     k8s = k8s or t.k8s
@@ -126,34 +158,8 @@ def build(cfg: Config, pve, *, k8s: str | None, node: str | None, log=print) -> 
     storage = cfg.pve.storage
     image = t.image_url.rsplit("/", 1)[-1]
     vmid = cfg.pve.template
-
-    # The snippet bakes in tk8s_version and the pre-pull version, so a copy left on the storage
-    # from an earlier build would silently build with the earlier settings. A mounted snippets/
-    # is rewritten in place; otherwise the local copy made for the operator is the reference.
-    data = user_data(t.tk8s_version, k8s)
-    on_storage = _has(pve, node, storage, "snippets", SNIPPET)
-    if t.snippets_dir:
-        target = Path(t.snippets_dir) / SNIPPET
-        if not target.exists() or target.read_text() != data:
-            target.write_text(data)
-            log(f"wrote {target}")
-        if not _has(pve, node, storage, "snippets", SNIPPET):
-            log(f"{target} is not visible as {storage}:snippets/{SNIPPET}; check the mount")
-            return 1
-    else:
-        local = config.state_dir() / SNIPPET
-        stale = on_storage and local.exists() and local.read_text() != data
-        if not on_storage or stale:
-            local.parent.mkdir(parents=True, exist_ok=True)
-            local.write_text(data)
-            log(f"wrote {local}")
-            if stale:
-                log(f"settings changed since {storage}:snippets/{SNIPPET} was copied; replace it")
-            else:
-                log("PVE cannot receive snippets over the API; copy it onto the storage once, e.g.")
-            log(f"  scp {local} root@<pve-node>:/mnt/pve/{storage}/snippets/")
-            log("then run `tklab create template` again")
-            return 1
+    if not _snippet_ready(cfg, pve, node, user_data(t.tk8s_version, k8s), log):
+        return 1
 
     if _has(pve, node, storage, "import", image):
         log(f"{image} already on {storage}, not downloading")

@@ -40,13 +40,6 @@ def write(tmp_path: Path, text: str) -> Path:
     return p
 
 
-def write_tmp(text: str) -> Path:
-    import tempfile
-
-    d = Path(tempfile.mkdtemp())
-    return write(d, text)
-
-
 def test_from_file_names_and_overrides(tmp_path):
     p = write(
         tmp_path,
@@ -103,11 +96,11 @@ name = "nobody"
         assert needle in msg, needle
 
 
-def test_balloon_must_not_exceed_memory():
+def test_balloon_must_not_exceed_memory(tmp_path):
     with pytest.raises(classdef.ClassDefError, match=r"balloon .* must not exceed memory"):
         flags("k8s-101", 1, memory=4096)  # config balloon 8192 > 4096
     cd = classdef.from_file(
-        write_tmp('name = "x"\ncount = 1\n[vm]\nmemory = 4096\nballoon = 4096\n'), vm=VM
+        write(tmp_path, 'name = "x"\ncount = 1\n[vm]\nmemory = 4096\nballoon = 4096\n'), vm=VM
     )
     assert cd.students[0].balloon == 4096
 
@@ -137,7 +130,6 @@ def test_init_cluster_three_forms_from_flags(tmp_path, monkeypatch):
     f.write_text("apiVersion: tk8s/v1\nkind: Cluster\nmetadata:\n  name: ha\nspec:\n  nodes: []\n")
     cd = flags("k8s-101", 1, init_cluster="ha.yaml")
     assert cd.students[0].init_cluster == str(f)  # absolute, relative to the cwd
-    assert cd.wants_cluster and not flags("k8s-101", 1).wants_cluster
 
 
 @pytest.mark.parametrize("bad", ["HA", "ha.toml", "", "file", "my preset"])

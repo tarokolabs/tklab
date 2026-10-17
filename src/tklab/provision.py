@@ -8,6 +8,7 @@ import string
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -197,33 +198,30 @@ class _Class:
             return self._slots.setdefault(node, threading.BoundedSemaphore(K8S_PER_NODE))
 
 
-def _entry(s: Student, vmid: int, node: str, ip: str, login: str, err: str, **kw) -> roster.Entry:
-    return roster.Entry(s.name, vmid, node, ip, login, kw.get("gp", ""), kw.get("vp", ""), err)
-
-
 def _clone_and_start(c: _Class, s: Student, node: str) -> roster.Entry:
     """Clone, then configure and start the VM. The returned entry carries the VM password."""
     name = vm_name(c.cd.name, s)
+    unplaced = roster.Entry(s.name, 0, node, "", "", "")
     try:
         want = size_bytes(s.disk)
     except ValueError as e:
-        return _entry(s, 0, node, "", "", str(e))
+        return replace(unplaced, error=str(e))
     if want < c.template_disk:
-        return _entry(s, 0, node, "", "", f"disk {s.disk} is smaller than the template disk")
+        return replace(unplaced, error=f"disk {s.disk} is smaller than the template disk")
     cs = c.cfg.pve.clone_storage
     timeout = FULL_CLONE_TIMEOUT if cs else CLONE_TIMEOUT
     try:
         vmid, upid = c.cloner.clone(name, node)
         c.pve.wait_task(upid, timeout=timeout)
     except PveError as e:
-        return _entry(s, 0, node, "", "", f"clone: {e}")
+        return replace(unplaced, error=f"clone: {e}")
     if cs and node != c.cloner.template_node:
         # The full clone sits on the template's node; move it (disk included) to its own node.
         try:
             c.pve.wait_task(c.pve.migrate(c.cloner.template_node, vmid, node), timeout=timeout)
         except PveError as e:
-            return _entry(s, vmid, c.cloner.template_node, "", "", f"clone: {e}")
-    return _setup(c, s, _entry(s, vmid, node, "", "", "", vp=_password()))
+            return replace(unplaced, vmid=vmid, node=c.cloner.template_node, error=f"clone: {e}")
+    return _setup(c, s, roster.Entry(s.name, vmid, node, "", "", "", _password()))
 
 
 def _start(c: _Class, node: str, vmid: int) -> None:
@@ -241,6 +239,7 @@ def _setup(c: _Class, s: Student, e: roster.Entry) -> roster.Entry:
     """Apply the student's cloud-init, sizing and tags to a cloned VM and start it."""
     name = vm_name(c.cd.name, s)
     want = size_bytes(s.disk)
+    started = roster.Entry(s.name, e.vmid, e.node, "", "", "", e.vm_password)
     try:
         c.pve.set_config(
             e.node,
@@ -260,9 +259,9 @@ def _setup(c: _Class, s: Student, e: roster.Entry) -> roster.Entry:
                 c.pve.wait_task(resize)
         _start(c, e.node, e.vmid)
     except PveError as err:
-        return _entry(s, e.vmid, e.node, "", "", f"vm setup: {err}", vp=e.vm_password)
+        return replace(started, error=f"vm setup: {err}")
     c.log(f"{name}: VM {e.vmid} on {e.node} started, waiting for an address")
-    return _entry(s, e.vmid, e.node, "", "", "", vp=e.vm_password)
+    return started
 
 
 def _connect(c: _Class, s: Student, e: roster.Entry, *, resume: bool) -> roster.Entry:
@@ -279,7 +278,7 @@ def _connect(c: _Class, s: Student, e: roster.Entry, *, resume: bool) -> roster.
             f"guest agent reported no IPv4 address within {AGENT_TIMEOUT}s; check the VM console, "
             f"then rerun `tklab create class` for {c.cd.name} to finish this student"
         )
-        return _entry(s, e.vmid, e.node, "unknown", "", why, vp=e.vm_password)
+        return roster.Entry(s.name, e.vmid, e.node, "unknown", "", "", e.vm_password, why)
     guac_password = _password()
     try:
         try:
@@ -304,9 +303,10 @@ def _connect(c: _Class, s: Student, e: roster.Entry, *, resume: bool) -> roster.
             )
         c.guac.grant(login, connections=ids, groups=[c.group_id])
     except GuacError as err:
-        return _entry(s, e.vmid, e.node, ip, login, f"guacamole: {err}", vp=e.vm_password)
+        why = f"guacamole: {err}"
+        return roster.Entry(s.name, e.vmid, e.node, ip, login, "", e.vm_password, why)
     c.log(f"{name}: {ip}, Guacamole user {login}")
-    return _entry(s, e.vmid, e.node, ip, login, "", gp=guac_password, vp=e.vm_password)
+    return roster.Entry(s.name, e.vmid, e.node, ip, login, guac_password, e.vm_password)
 
 
 def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool, retag: bool) -> roster.Entry:
@@ -317,10 +317,8 @@ def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool, retag: bool) ->
     name = vm_name(c.cd.name, s)
     assert s.init_cluster is not None
 
-    def outcome(why: str) -> roster.Entry:
-        return _entry(
-            s, e.vmid, e.node, e.ip, e.guac_user, why, gp=e.guac_password, vp=e.vm_password
-        )
+    def outcome(why: str) -> roster.Entry:  # the entry keeps its address, login and secrets
+        return replace(e, error=why)
 
     text = None
     cluster = "tk8s"
@@ -329,7 +327,13 @@ def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool, retag: bool) ->
             text = Path(s.init_cluster).read_text()
         except OSError as err:
             return outcome(f"k8s: cannot read {s.init_cluster}: {err}")
-        cluster = classdef.cluster_name(text) or "tk8s"  # classdef checked it; keep going
+        found = classdef.cluster_name(text)  # checked by classdef, but the file may have changed
+        if found is None:
+            return outcome(
+                f"k8s: cannot read the cluster name from {s.init_cluster}; "
+                "keep name: under metadata:"
+            )
+        cluster = found
     with c.k8s_slot(e.node):
         try:
             if retag:
@@ -375,16 +379,7 @@ def _provision_one(
             if previous.error.startswith("k8s:"):
                 if s.init_cluster is None:  # the instructor dropped the cluster for this student
                     c.pve.set_config(e.node, e.vmid, tags=_tags(c.cd, s))
-                    return _entry(
-                        s,
-                        e.vmid,
-                        e.node,
-                        e.ip,
-                        e.guac_user,
-                        "",
-                        gp=e.guac_password,
-                        vp=e.vm_password,
-                    )
+                    return replace(e, error="")
                 return _k8s(c, s, previous, rerun=True, retag=True)
             if previous.error.startswith("vm setup"):
                 current = e = _setup(c, s, previous)
@@ -401,18 +396,9 @@ def _provision_one(
     except Exception as err:  # one student's surprise must not sink the class
         why = f"unexpected {type(err).__name__}: {err}"
         if current is None:
-            return _entry(s, 0, c.node_for(index), "", "", why)
+            return roster.Entry(s.name, 0, c.node_for(index), "", "", "", error=why)
         # keep what the roster already knows (address, login, passwords): the rerun needs them
-        return _entry(
-            s,
-            current.vmid,
-            current.node,
-            current.ip,
-            current.guac_user,
-            why,
-            gp=current.guac_password,
-            vp=current.vm_password,
-        )
+        return replace(current, error=why)
 
 
 def create(

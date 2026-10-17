@@ -592,9 +592,9 @@ def test_k8s_runs_at_most_two_clusters_per_node_at_once(monkeypatch):
 def test_describe_reads_the_k8s_tag_back():
     pve, guac = FakePve(), FakeGuac()
     provision.create(k8s_cd(["alice"]), CFG, pve, guac, parallel=1, **QUIET)
-    assert provision.describe("k8s-101", CFG, pve).wants_cluster
+    assert provision.describe("k8s-101", CFG, pve).students[0].init_cluster == "default"
     provision.create(cd(["bob"], name="k8s-102"), CFG, pve, guac, parallel=1, **QUIET)
-    assert not provision.describe("k8s-102", CFG, pve).wants_cluster
+    assert provision.describe("k8s-102", CFG, pve).students[0].init_cluster is None
 
 
 def test_k8s_command_three_forms_and_rerun():
@@ -748,3 +748,14 @@ def test_k8s_rerun_after_a_connect_failure_retags_with_the_current_value():
     (again,) = provision.create(k8s_cd(["alice"], "ha"), CFG, pve, guac, parallel=1, **QUIET)
     assert again.error == "" and "--preset ha" in script_of(execs(pve)[0])
     assert "k8s-ha" in pve.vms[3100]["tags"].split(";")
+
+
+def test_k8s_file_whose_name_vanished_is_a_k8s_error_not_a_misnamed_cluster(tmp_path):
+    f = tmp_path / "demo.yaml"
+    f.write_text("metadata:\n  name: demo\n")
+    pve, guac = FakePve(), FakeGuac()
+    c = k8s_cd(["alice"], str(f))
+    f.write_text("spec: {}\n")  # edited after validation: no metadata.name any more
+    (e,) = provision.create(c, CFG, pve, guac, parallel=1, **QUIET)
+    assert e.error == f"k8s: cannot read the cluster name from {f}; keep name: under metadata:"
+    assert execs(pve) == [] and e.guac_password
