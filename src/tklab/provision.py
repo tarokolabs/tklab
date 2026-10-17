@@ -28,6 +28,7 @@ K8S_POLL = 10
 K8S_PER_NODE = 2  # more clusters at once on one PVE node starve each other during image pulls
 K8S_LOG = "/var/log/tklab-k8s.log"
 K8S_FILE = "/var/lib/tklab/cluster.yaml"  # where a student's cluster.yaml lands in the VM
+K8S_BUSY = 75  # a rerun's exit code when the previous attempt's tkctl is still running
 SIZE_RE = re.compile(r"^(\d+)([KMGT])$")
 UNITS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 
@@ -55,7 +56,8 @@ def size_bytes(size: str) -> int:
 def k8s_command(init_cluster: str, cluster_name: str, *, rerun: bool) -> list[str]:
     """The guest-agent command that builds the student's cluster: tkctl as `student`, output
     to K8S_LOG. A cluster.yaml is made world-readable first (the agent writes it 0666); a rerun
-    deletes what the failed attempt left, since tkctl would resume the old topology."""
+    deletes what the failed attempt left, since tkctl would resume the old topology, but not
+    while that attempt is still running (a timed-out build keeps going in the VM)."""
     if init_cluster == "default":
         create = "tkctl create cluster tk8s"
     elif classdef.is_file(init_cluster):
@@ -68,6 +70,8 @@ def k8s_command(init_cluster: str, cluster_name: str, *, rerun: bool) -> list[st
         f"tkctl verify cluster {cluster_name}"
     )
     root = f"chmod 0644 {K8S_FILE} && " if classdef.is_file(init_cluster) else ""
+    if rerun:  # [t] so pgrep does not match this very command line
+        root = f"pgrep -f '[t]kctl create cluster' >/dev/null && exit {K8S_BUSY}; " + root
     script = f"{root}/usr/sbin/runuser -u {STUDENT_USER} -- bash -lc '{inner}' > {K8S_LOG} 2>&1"
     return ["/bin/bash", "-c", script]
 
@@ -320,7 +324,10 @@ def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool) -> roster.Entry
     text = None
     cluster = "tk8s"
     if classdef.is_file(s.init_cluster):
-        text = Path(s.init_cluster).read_text()
+        try:
+            text = Path(s.init_cluster).read_text()
+        except OSError as err:
+            return outcome(f"k8s: cannot read {s.init_cluster}: {err}")
         cluster = classdef.cluster_name(text) or "tk8s"  # classdef checked it; keep going
     with c.k8s_slot(e.node):
         try:
@@ -344,6 +351,11 @@ def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool) -> roster.Entry
         except PveError as err:
             return outcome(f"k8s: {err}")
     code = int(status.get("exitcode", 1))
+    if rerun and code == K8S_BUSY:
+        return outcome(
+            f"k8s: the previous attempt is still running in the VM (see {K8S_LOG}); "
+            "rerun when it is done"
+        )
     if code:
         return outcome(f"k8s: exit {code}, see {K8S_LOG} in the VM")
     c.log(f"{name}: tk8s cluster ready")
@@ -360,6 +372,18 @@ def _provision_one(
         if previous is not None and previous.vmid:
             e = previous
             if previous.error.startswith("k8s:"):
+                if s.init_cluster is None:  # the instructor dropped the cluster for this student
+                    c.pve.set_config(e.node, e.vmid, tags=_tags(c.cd, s))
+                    return _entry(
+                        s,
+                        e.vmid,
+                        e.node,
+                        e.ip,
+                        e.guac_user,
+                        "",
+                        gp=e.guac_password,
+                        vp=e.vm_password,
+                    )
                 return _k8s(c, s, previous, rerun=True)
             if previous.error.startswith("vm setup"):
                 current = e = _setup(c, s, previous)
@@ -374,10 +398,20 @@ def _provision_one(
             return e
         return _k8s(c, s, e, rerun=False)
     except Exception as err:  # one student's surprise must not sink the class
-        vmid = current.vmid if current else 0
-        node = current.node if current else c.node_for(index)
-        vp = current.vm_password if current else ""
-        return _entry(s, vmid, node, "", "", f"unexpected {type(err).__name__}: {err}", vp=vp)
+        why = f"unexpected {type(err).__name__}: {err}"
+        if current is None:
+            return _entry(s, 0, c.node_for(index), "", "", why)
+        # keep what the roster already knows (address, login, passwords): the rerun needs them
+        return _entry(
+            s,
+            current.vmid,
+            current.node,
+            current.ip,
+            current.guac_user,
+            why,
+            gp=current.guac_password,
+            vp=current.vm_password,
+        )
 
 
 def create(

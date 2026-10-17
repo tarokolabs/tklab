@@ -687,3 +687,53 @@ def test_describe_rebuilds_init_cluster_per_student(tmp_path):
     pve.vms[3102]["tags"] += ";k8s"  # a VM from before this change: bare k8s tag
     back = provision.describe("k8s-101", CFG, pve)
     assert [x.init_cluster for x in back.students] == ["ha", None, "default", "cluster.yaml"]
+
+
+def test_k8s_rerun_refuses_while_the_previous_build_still_runs():
+    pve = FakePve(k8s_exit_for={"lab-k8s-101-alice": 1})
+    guac = FakeGuac()
+    (e,) = provision.create(k8s_cd(["alice"], "ha"), CFG, pve, guac, parallel=1, **QUIET)
+    pve.k8s_exit_for["lab-k8s-101-alice"] = provision.K8S_BUSY
+    (again,) = provision.create(k8s_cd(["alice"], "ha"), CFG, pve, guac, parallel=1, **QUIET)
+    assert again.error == (
+        "k8s: the previous attempt is still running in the VM (see /var/log/tklab-k8s.log); "
+        "rerun when it is done"
+    )
+    assert again.guac_password == e.guac_password and again.ip == e.ip
+    rerun_script = script_of(pve.calls[-1])
+    assert rerun_script.startswith("pgrep -f '[t]kctl create cluster' >/dev/null && exit 75; ")
+    assert "pgrep" not in script_of(execs(pve)[0])
+
+
+def test_k8s_rerun_without_init_cluster_clears_the_error_and_keeps_secrets():
+    pve = FakePve(k8s_exit_for={"lab-k8s-101-alice": 1})
+    guac = FakeGuac()
+    (e,) = provision.create(k8s_cd(["alice"]), CFG, pve, guac, parallel=1, **QUIET)
+    assert e.error.startswith("k8s:")
+    before = len(pve.calls)
+    (again,) = provision.create(cd(["alice"]), CFG, pve, guac, parallel=1, **QUIET)
+    assert again.error == "" and again.guac_password == e.guac_password and again.ip == e.ip
+    assert [c[0] for c in pve.calls[before:]] == ["config"]
+    assert not any(t.startswith("k8s") for t in pve.vms[3100]["tags"].split(";"))
+
+
+def test_k8s_unreadable_file_is_a_k8s_error_and_keeps_secrets(tmp_path):
+    f = tmp_path / "demo.yaml"
+    f.write_text("metadata:\n  name: demo\n")
+    pve, guac = FakePve(), FakeGuac()
+    c = k8s_cd(["alice"], str(f))
+    f.unlink()  # validated earlier, gone by the time the VM is up
+    (e,) = provision.create(c, CFG, pve, guac, parallel=1, **QUIET)
+    assert e.error.startswith(f"k8s: cannot read {f}: ")
+    assert e.ip and e.guac_user == "alice" and e.guac_password and execs(pve) == []
+
+
+def test_unexpected_error_keeps_the_entry_fields(monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("surprise")
+
+    monkeypatch.setattr(provision, "_k8s", boom)
+    pve, guac = FakePve(), FakeGuac()
+    (e,) = provision.create(k8s_cd(["alice"]), CFG, pve, guac, parallel=1, **QUIET)
+    assert e.error == "unexpected RuntimeError: surprise"
+    assert e.ip == "192.168.1.100" and e.guac_user == "alice" and e.guac_password
