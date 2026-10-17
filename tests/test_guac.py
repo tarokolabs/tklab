@@ -10,17 +10,6 @@ BASE = "https://guac/api"
 DS = "/session/data/postgresql"
 
 
-class FakeResp(BytesIO):
-    def __init__(self, obj):
-        super().__init__(json.dumps(obj).encode() if obj is not None else b"")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
 def opener_with(routes):
     calls = []
 
@@ -35,7 +24,7 @@ def opener_with(routes):
         r = r(req, body) if callable(r) else r
         if isinstance(r, Exception):
             raise r
-        return FakeResp(r)
+        return BytesIO(json.dumps(r).encode() if r is not None else b"")
 
     open_.calls = calls
     return open_

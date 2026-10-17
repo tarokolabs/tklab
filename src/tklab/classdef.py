@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from .config import VmConfig
+from .config import VM_FIELDS, VmConfig, is_int, vm_fields
+from .envfile import unquote
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")
 # A student is a name (same rule as class names) or the number a count expands to (01, 02, ...).
 STUDENT_RE = re.compile(r"^([a-z][a-z0-9-]{0,15}|[0-9]{2,3})$")
-VM_FIELDS = ("cores", "memory", "balloon", "disk")
 # init_cluster: "default", a tk8s preset name passed through to tkctl, or a cluster.yaml
 PRESET_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")  # tk8s's cluster-name rule too
 RESERVED = ("default", "file")  # not preset names: "file" is the tag for a cluster.yaml
@@ -42,17 +42,9 @@ class ClassDef:
     expires: date | None = None
     node: str | None = None
 
-    @property
-    def wants_cluster(self) -> bool:
-        return any(s.init_cluster is not None for s in self.students)
-
 
 def vm_name(class_name: str, student: Student) -> str:
     return f"lab-{class_name}-{student.name}"
-
-
-def _is_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _parse_date(value: object, errors: list[str]) -> date | None:
@@ -90,9 +82,7 @@ def cluster_name(text: str) -> str | None:
             return None
         m = _NAME.match(line) if inside else None
         if m:
-            v = m.group(1)
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-                v = v[1:-1]
+            v = unquote(m.group(1))
             return v if PRESET_RE.match(v) else None
     return None
 
@@ -127,23 +117,6 @@ def parse_init_cluster(value: object, base: Path, where: str, errors: list[str])
         )
         return None
     return str(path)
-
-
-def _vm_fields(section: dict, where: str, errors: list[str]) -> dict:
-    out = {}
-    for k in VM_FIELDS:
-        if k not in section:
-            continue
-        v = section[k]
-        if k == "disk":
-            if not isinstance(v, str):
-                errors.append(f'{where}.disk must be a string like "60G"')
-                continue
-        elif not _is_int(v):
-            errors.append(f"{where}.{k} must be an integer (MiB for memory and balloon)")
-            continue
-        out[k] = v
-    return out
 
 
 def _build(
@@ -196,7 +169,7 @@ def from_flags(
 ) -> ClassDef:
     errors: list[str] = []
     init = parse_init_cluster(init_cluster, Path.cwd(), "init_cluster", errors)
-    if not _is_int(count) or count < 1:
+    if not is_int(count) or count < 1:
         errors.append(f"count must be a positive integer, got {count!r}")
         count = 0
     class_vm = {k: v for k, v in (("cores", cores), ("memory", memory)) if v is not None}
@@ -227,13 +200,13 @@ def from_file(path: Path, *, vm: VmConfig) -> ClassDef:
             names = list(st)
     elif "count" in raw:
         c = raw["count"]
-        if not _is_int(c) or c < 1:
+        if not is_int(c) or c < 1:
             errors.append("count must be a positive integer")
         else:
             names = [f"{i:02d}" for i in range(1, c + 1)]
     else:
         errors.append("students or count is required")
-    class_vm = _vm_fields(raw.get("vm", {}), "vm", errors)
+    class_vm = vm_fields(raw.get("vm", {}), "vm", errors)
     base = path.resolve().parent
     default = parse_init_cluster(raw.get("init_cluster"), base, "init_cluster", errors)
     init: dict[str, str | None] = dict.fromkeys(names, default)
@@ -245,7 +218,7 @@ def from_file(path: Path, *, vm: VmConfig) -> ClassDef:
         if not isinstance(n, str):
             errors.append(f"students_override[{i}].name is required")
             continue
-        overrides[n] = _vm_fields(o, f"students_override[{i}]", errors)
+        overrides[n] = vm_fields(o, f"students_override[{i}]", errors)
         if "init_cluster" in o:
             where = f"students_override[{i}].init_cluster"
             init[n] = parse_init_cluster(o["init_cluster"], base, where, errors)

@@ -19,6 +19,13 @@ def path() -> Path:
     return Path(base) / "tklab" / "secrets.env"
 
 
+def unquote(v: str) -> str:
+    """A value without the one pair of matching quotes a shell-style line may wrap it in."""
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+        return v[1:-1]
+    return v
+
+
 def read(p: Path) -> dict[str, str]:
     try:
         text = p.read_text()
@@ -29,10 +36,7 @@ def read(p: Path) -> dict[str, str]:
         if "=" in line and not line.lstrip().startswith("#"):
             k, v = line.split("=", 1)
             k = k.strip().removeprefix("export ").strip()
-            v = v.strip()
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
-                v = v[1:-1]
-            out[k] = v
+            out[k] = unquote(v.strip())
     return out
 
 

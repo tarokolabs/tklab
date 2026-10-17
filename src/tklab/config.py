@@ -7,6 +7,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import envfile
+
 
 class ConfigError(Exception):
     """One or more configuration problems; the message lists all of them."""
@@ -128,8 +130,6 @@ def state_dir() -> Path:
 
 def merged_env() -> dict[str, str]:
     """Real environment first; the instructor's env file fills in what is missing."""
-    from . import envfile
-
     merged = envfile.read(envfile.path())
     merged.update({k: v for k, v in os.environ.items() if k in envfile.KEYS})
     return merged
@@ -153,8 +153,37 @@ def secrets(*, guacamole: bool = True) -> Secrets:
     return Secrets(env[PVE_TOKEN_ENV], guac, env.get(GUAC_TOTP_ENV) or None)
 
 
-def _is_int(value: object) -> bool:
+VM_FIELDS = ("cores", "memory", "balloon", "disk")
+
+
+def is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def vm_fields(section: dict, where: str, errors: list[str]) -> dict:
+    """The VM sizing keys present in a TOML section, type-checked; the config file and the
+    class file ([vm] and [[students_override]]) share this rule."""
+    out = {}
+    for k in VM_FIELDS:
+        if k not in section:
+            continue
+        v = section[k]
+        if k == "disk":
+            if not isinstance(v, str):
+                errors.append(f'{where}.disk must be a string like "60G"')
+                continue
+        elif not is_int(v):
+            errors.append(f"{where}.{k} must be an integer (MiB for memory and balloon)")
+            continue
+        out[k] = v
+    return out
+
+
+def _optional_str(section: dict, key: str, where: str, hint: str, errors: list[str]):
+    value = section.get(key)
+    if value is not None and not isinstance(value, str):
+        errors.append(f"{where}.{key} must be {hint}")
+    return value
 
 
 def _require(section: dict, key: str, typ: type, errors: list[str], where: str):
@@ -162,7 +191,7 @@ def _require(section: dict, key: str, typ: type, errors: list[str], where: str):
         errors.append(f"{where}.{key} is required")
         return None
     value = section[key]
-    if typ is int and not _is_int(value):
+    if typ is int and not is_int(value):
         errors.append(f"{where}.{key} must be an integer")
         return None
     if typ is str and not isinstance(value, str):
@@ -188,38 +217,29 @@ def load(path: Path | None = None) -> Config:
     p = {k: _require(pve, k, str, errors, "pve") for k in str_keys}
     template = _require(pve, "template", int, errors, "pve")
     rng = pve.get("vmid_range")
-    if not (isinstance(rng, list) and len(rng) == 2 and all(_is_int(x) for x in rng)):
+    if not (isinstance(rng, list) and len(rng) == 2 and all(is_int(x) for x in rng)):
         errors.append("pve.vmid_range must be [low, high]")
         rng = None
     elif rng[0] > rng[1]:
         errors.append("pve.vmid_range must satisfy low <= high")
-    ca_file = pve.get("ca_file")
-    if ca_file is not None and not isinstance(ca_file, str):
-        errors.append("pve.ca_file must be a path string")
-    build_token_id = pve.get("build_token_id")
-    if build_token_id is not None and not isinstance(build_token_id, str):
-        errors.append("pve.build_token_id must be a string like user@realm!tokenid")
-    clone_storage = pve.get("clone_storage")
-    if clone_storage is not None and not isinstance(clone_storage, str):
-        errors.append("pve.clone_storage must be a storage name like local-lvm")
+    ca_file = _optional_str(pve, "ca_file", "pve", "a path string", errors)
+    build_token_id = _optional_str(
+        pve, "build_token_id", "pve", "a string like user@realm!tokenid", errors
+    )
+    clone_storage = _optional_str(
+        pve, "clone_storage", "pve", "a storage name like local-lvm", errors
+    )
     nodes = pve.get("nodes", [])
     if not isinstance(nodes, list) or not all(isinstance(n, str) for n in nodes):
         errors.append('pve.nodes must be a list of node names like ["pve-node6", "pve-node7"]')
         nodes = []
     g = {k: _require(guac, k, str, errors, "guacamole") for k in ("url", "username")}
-    v = {k: vm.get(k, getattr(VmConfig, k)) for k in ("cores", "memory", "balloon", "disk")}
-    for k in ("cores", "memory", "balloon"):
-        if not _is_int(v[k]):
-            errors.append(f"vm.{k} must be an integer (MiB for memory and balloon)")
-    if not isinstance(v["disk"], str):
-        errors.append('vm.disk must be a string like "60G"')
+    v = {k: getattr(VmConfig, k) for k in VM_FIELDS} | vm_fields(vm, "vm", errors)
     t = {k: _require(tpl, k, str, errors, "template") for k in ("image_url", "image_sha512")}
-    snippets_dir = tpl.get("snippets_dir")
-    if snippets_dir is not None and not isinstance(snippets_dir, str):
-        errors.append("template.snippets_dir must be a path string")
-    template_disk = tpl.get("disk", TemplateConfig.disk)
-    if not isinstance(template_disk, str):
-        errors.append('template.disk must be a string like "12G"')
+    snippets_dir = _optional_str(tpl, "snippets_dir", "template", "a path string", errors)
+    template_disk = _optional_str(tpl, "disk", "template", 'a string like "12G"', errors)
+    if template_disk is None:
+        template_disk = TemplateConfig.disk
     if errors:
         raise ConfigError(f"{path}:\n  " + "\n  ".join(errors))
     assert template is not None and rng is not None  # every error path raised above

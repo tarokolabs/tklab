@@ -3,38 +3,12 @@ import pytest
 from tklab import setup
 from tklab.guac import GuacError
 
-from .fakes import FakeGuacAdmin
-from .test_setup_pve import cfg
-
-
-class ServiceClient:
-    """What make_client returns: a Guac-like object whose login goes through the fake admin."""
-
-    def __init__(self, fake, username, password, totp_secret):
-        self.fake, self.username, self.password, self.totp_secret = (
-            fake,
-            username,
-            password,
-            totp_secret,
-        )
-
-    def login(self):
-        r = self.fake.service_login(self.username, self.password, self.totp_secret)
-        if r["secret"]:
-            # the real client raises the challenge; setup reads the secret from it
-            body = {"expected": [{"name": "guac-totp", "secret": r["secret"]}]}
-            raise GuacError(403, "Verification code required", body)
-
-    def enrol(self, code):
-        self.fake.calls.append(("enrol", self.username, code))
-
-    def logout(self):
-        pass
+from .fakes import FakeGuacAdmin, ServiceClient, make_cfg
 
 
 def run(fake, env):
     return setup.reconcile_guacamole(
-        cfg(), fake, env, make_client=lambda u, p, s: ServiceClient(fake, u, p, s)
+        make_cfg(), fake, env, make_client=lambda u, p, s: ServiceClient(fake, u, p, s)
     )
 
 
@@ -106,7 +80,7 @@ def test_drops_stale_secret_when_totp_is_gone():
 
 
 def test_manual_guacamole_lists_the_three_permissions():
-    text = setup.manual_guacamole(cfg())
+    text = setup.manual_guacamole(make_cfg())
     for p in ("Create new users", "Create new connections", "Create new connection groups"):
         assert p in text
     assert "tklab" in text and "TK_LAB_GUAC_PASSWORD" in text
@@ -149,7 +123,7 @@ def test_service_password_reaches_on_secret_before_anything_else_can_fail():
     stored = []
     with pytest.raises(GuacError):
         setup.reconcile_guacamole(
-            cfg(),
+            make_cfg(),
             fake,
             {},
             make_client=lambda u, p, s: ServiceClient(fake, u, p, s),

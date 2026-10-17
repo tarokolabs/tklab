@@ -17,10 +17,6 @@ def _choose(ask_text, question: str, options: list[str], default: str) -> str:
         print(f"  choose one of: {', '.join(options)}")
 
 
-def _is_auth_error(e: PveError) -> bool:
-    return e.status == 401
-
-
 def pve_login(ask_text, ask_secret, admin_factory, pve_url: str):
     """Ask for the administrator once, then for the password until PVE accepts it (plus a TFA
     code when PVE asks for one). Anything but a rejected login (TLS, network, 5xx) propagates."""
@@ -30,7 +26,7 @@ def pve_login(ask_text, ask_secret, admin_factory, pve_url: str):
         try:
             return admin_factory(pve_url, pve_admin, password), pve_admin
         except PveError as e:
-            if not _is_auth_error(e):
+            if e.status != 401:
                 raise
             if "TFA" not in str(e):
                 print(f"  {e}")
@@ -41,18 +37,21 @@ def pve_login(ask_text, ask_secret, admin_factory, pve_url: str):
                 admin.login(totp=code)
                 return admin, pve_admin
             except PveError as e2:
-                if not _is_auth_error(e2):
+                if e2.status != 401:
                     raise
                 print(f"  {e2}")
 
 
-def guac_admin_login(ask_text, ask_secret, guac_login, guac_url: str) -> tuple[str, str]:
+def guac_admin_login(ask_text, ask_secret, guac_login, guac_url: str) -> str:
+    """Ask for the Guacamole administrator and a password until guac_login accepts them (plus
+    a TOTP code when challenged); returns the administrator's name. The password is used by
+    guac_login alone and never stored."""
     guac_admin = ask_text("Guacamole administrator", DEFAULTS["guacamole_admin"])
     while True:
         guac_pw = ask_secret(f"Password for {guac_admin}")
         try:
             guac_login(guac_url, guac_admin, guac_pw, None)
-            return guac_admin, guac_pw
+            return guac_admin
         except GuacError as e:
             if e.status != 403:
                 raise
@@ -62,17 +61,16 @@ def guac_admin_login(ask_text, ask_secret, guac_login, guac_url: str) -> tuple[s
             code = ask_secret("Guacamole TOTP code")
             try:
                 guac_login(guac_url, guac_admin, guac_pw, code)
-                return guac_admin, guac_pw
+                return guac_admin
             except GuacError as e2:
                 if e2.status not in (400, 403):
                     raise
                 print(f"  {e2}")
 
 
-def ask(*, admin_factory, ask_text, ask_secret, guac_login) -> tuple[Answers, object, str]:
-    """Walk the questions. Returns the answers (image_sha512 left empty for the caller), a
-    logged-in PVE admin client and the Guacamole admin password, both used once and never stored.
-    """
+def ask(*, admin_factory, ask_text, ask_secret, guac_login) -> Answers:
+    """Walk the questions; the answers come back with image_sha512 left empty for the caller.
+    The logged-in clients stay with admin_factory and guac_login, which the caller owns."""
     pve_url = ask_text("PVE API URL (https://host:8006)", "")
     admin, pve_admin = pve_login(ask_text, ask_secret, admin_factory, pve_url)
     storages = [
@@ -142,8 +140,8 @@ def ask(*, admin_factory, ask_text, ask_secret, guac_login) -> tuple[Answers, ob
             break
         print(f"  not online nodes: {', '.join(unknown)}")
     guac_url = ask_text("Guacamole URL", "")
-    guac_admin, guac_pw = guac_admin_login(ask_text, ask_secret, guac_login, guac_url)
-    answers = Answers(
+    guac_admin = guac_admin_login(ask_text, ask_secret, guac_login, guac_url)
+    return Answers(
         pve_url=pve_url,
         pve_admin=pve_admin,
         node=node,
@@ -158,4 +156,3 @@ def ask(*, admin_factory, ask_text, ask_secret, guac_login) -> tuple[Answers, ob
         clone_storage=clone_storage,
         nodes=picked,
     )
-    return answers, admin, guac_pw

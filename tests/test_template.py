@@ -1,9 +1,46 @@
-from tklab import template
-from tklab.config import Config, GuacConfig, PveConfig, TemplateConfig, VmConfig
+from dataclasses import replace
 
-from .fakes import FakePve
+from tklab import template
+from tklab.config import state_dir
+
+from .fakes import FakePve, make_cfg
 
 QUIET = {"log": lambda *_: None}
+
+
+class TemplatePve(FakePve):
+    def __init__(self, *, node="pve-node7", **kwargs):
+        super().__init__(**kwargs)
+        self.vms[3900] = {
+            "vmid": 3900,
+            "name": "t",
+            "node": node,
+            "pool": "",
+            "status": "stopped",
+            "tags": "",
+            "cores": 8,
+            "memory": 1,
+            "balloon": 1,
+            "disk": "2G",
+        }
+
+    def download_url(self, *args):
+        self.calls.append(("download_url", args))
+        return f"UPID:{args[0]}:dl"
+
+    def create_vm(self, node, vmid, **kv):
+        self.calls.append(("create_vm", (node, vmid), kv))
+        return f"UPID:{node}:cr"
+
+    def wait_status(self, *args, **kwargs):
+        self.calls.append(("wait_status", args))
+
+    def make_template(self, *args):
+        self.calls.append(("make_template", args))
+        return f"UPID:{args[0]}:tpl"
+
+    def status(self, node, vmid):
+        return "stopped"
 
 
 def test_user_data_installs_browser_session_tk8s_and_prepulls_image():
@@ -63,69 +100,38 @@ def test_the_session_is_the_browser():
 
 
 def cfg(node="pve-node7", k8s="1.37.0"):
-    return Config(
-        PveConfig("u", "t", node, "lab", "nas-nfs", 3900, (3100, 3199), "vmbr0"),
-        GuacConfig("g", "s"),
-        VmConfig(),
-        TemplateConfig(
-            "https://x/debian-13-genericcloud-amd64.qcow2", "deadbeef", "v2026.10.0", k8s
-        ),
+    base = make_cfg(url="u", token_id="t", node=node, build_token_id=None)
+    return replace(
+        base,
+        guacamole=replace(base.guacamole, url="g", username="s"),
+        template=replace(base.template, tk8s_version="v2026.10.0", k8s=k8s),
     )
 
 
-def test_build_needs_snippet_on_storage_first(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+def test_build_needs_snippet_on_storage_first():
     pve = FakePve()
     lines = []
     rc = template.build(cfg(), pve, k8s=None, node=None, log=lines.append)
     assert rc == 1
-    written = tmp_path / "tklab" / template.SNIPPET
+    written = state_dir() / template.SNIPPET
     assert written.read_text().startswith("#cloud-config")
     joined = "\n".join(lines)
     assert str(written) in joined and "/mnt/pve/nas-nfs/snippets/" in joined
     assert not any(c[0] in ("download_url", "create_vm") for c in pve.calls)
 
 
-def test_build_writes_snippet_into_a_mounted_snippets_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+def test_build_writes_snippet_into_a_mounted_snippets_dir(tmp_path):
     mounted = tmp_path / "snippets"
     mounted.mkdir()
     c = cfg()
-    c = Config(
-        c.pve,
-        c.guacamole,
-        c.vm,
-        TemplateConfig(
-            c.template.image_url,
-            c.template.image_sha512,
-            c.template.tk8s_version,
-            c.template.k8s,
-            snippets_dir=str(mounted),
-        ),
-    )
-    pve = FakePve()
+    c = replace(c, template=replace(c.template, snippets_dir=str(mounted)))
+    pve = TemplatePve()
     pve.storage_content = lambda node, storage, content: (
         [{"volid": f"{storage}:snippets/{template.SNIPPET}"}]
         if content == "snippets" and (mounted / template.SNIPPET).exists()
         else []
     )
-    pve.status = lambda node, vmid: "stopped"
-    pve.download_url = lambda *a: "UPID:pve-node7:dl"
-    pve.create_vm = lambda node, vmid, **kv: "UPID:pve-node7:cr"
-    pve.wait_status = lambda *a, **kw: None
-    pve.make_template = lambda *a: None
-    pve.vms[3900] = {
-        "vmid": 3900,
-        "name": "t",
-        "node": "pve-node7",
-        "pool": "",
-        "status": "stopped",
-        "tags": "",
-        "cores": 8,
-        "memory": 1,
-        "balloon": 1,
-        "disk": "2G",
-    }
+
     lines = []
     assert template.build(c, pve, k8s=None, node=None, log=lines.append) == 0
     assert (mounted / template.SNIPPET).read_text().startswith("#cloud-config")
@@ -133,27 +139,7 @@ def test_build_writes_snippet_into_a_mounted_snippets_dir(tmp_path, monkeypatch)
 
 
 def test_build_sequence():
-    pve = FakePve(snippets=[template.SNIPPET])
-    statuses = iter(["running", "running", "stopped"])
-    pve.status = lambda node, vmid: next(statuses)
-    pve.download_url = lambda *a: pve.calls.append(("download_url", a)) or "UPID:pve-node7:dl"
-    pve.create_vm = lambda node, vmid, **kv: (
-        pve.calls.append(("create_vm", (node, vmid), kv)) or ("UPID:pve-node7:cr")
-    )
-    pve.wait_status = lambda *a, **kw: pve.calls.append(("wait_status", a))
-    pve.make_template = lambda *a: pve.calls.append(("make_template", a)) or "UPID:pve-node7:tpl"
-    pve.vms[3900] = {
-        "vmid": 3900,
-        "name": "t",
-        "node": "pve-node7",
-        "pool": "",
-        "status": "stopped",
-        "tags": "",
-        "cores": 8,
-        "memory": 1,
-        "balloon": 1,
-        "disk": "2G",
-    }
+    pve = TemplatePve(snippets=[template.SNIPPET])
     assert template.build(cfg(), pve, k8s=None, node=None, **QUIET) == 0
     names = [c[0] for c in pve.calls]
     assert names[:2] == ["download_url", "wait"]
@@ -191,25 +177,12 @@ def test_build_sequence():
 
 
 def test_build_skips_download_when_image_is_present_and_needs_a_node():
-    pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
-    pve.status = lambda node, vmid: "stopped"
-    pve.create_vm = lambda node, vmid, **kv: (
-        pve.calls.append(("create_vm", (node, vmid), kv)) or ("UPID:pve-node9:cr")
+    pve = TemplatePve(
+        node="pve-node9",
+        snippets=[template.SNIPPET],
+        imports=["debian-13-genericcloud-amd64.qcow2"],
     )
-    pve.wait_status = lambda *a, **kw: None
-    pve.make_template = lambda *a: None
-    pve.vms[3900] = {
-        "vmid": 3900,
-        "name": "t",
-        "node": "pve-node9",
-        "pool": "",
-        "status": "stopped",
-        "tags": "",
-        "cores": 8,
-        "memory": 1,
-        "balloon": 1,
-        "disk": "2G",
-    }
+
     lines = []
     assert template.build(cfg("auto"), pve, k8s=None, node=None, log=lines.append) == 2
     assert "--node" in "\n".join(lines)
@@ -224,17 +197,15 @@ def test_user_data_without_k8s_pin_follows_tk8s_default():
     assert "--k8s" not in ud
 
 
-def test_build_without_k8s_pin_writes_an_unpinned_snippet(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+def test_build_without_k8s_pin_writes_an_unpinned_snippet():
     lines = []
     assert template.build(cfg(k8s=None), FakePve(), k8s=None, node=None, log=lines.append) == 1
-    written = (tmp_path / "tklab" / template.SNIPPET).read_text()
+    written = (state_dir() / template.SNIPPET).read_text()
     assert 'tkctl pull images"' in written and "--k8s" not in written
 
 
-def test_build_stops_when_settings_changed_since_the_snippet_was_copied(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    local = tmp_path / "tklab" / template.SNIPPET
+def test_build_stops_when_settings_changed_since_the_snippet_was_copied():
+    local = state_dir() / template.SNIPPET
     local.parent.mkdir(parents=True)
     local.write_text(template.user_data("v2026.10.0", "1.37.0"))
     pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
@@ -246,67 +217,23 @@ def test_build_stops_when_settings_changed_since_the_snippet_was_copied(tmp_path
     assert not any(c[0] in ("download_url", "create_vm") for c in pve.calls)
 
 
-def test_build_goes_on_when_the_snippet_matches_the_settings(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    local = tmp_path / "tklab" / template.SNIPPET
+def test_build_goes_on_when_the_snippet_matches_the_settings():
+    local = state_dir() / template.SNIPPET
     local.parent.mkdir(parents=True)
     local.write_text(template.user_data("v2026.10.0", "1.37.0"))
-    pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
-    pve.create_vm = lambda node, vmid, **kv: (
-        pve.calls.append(("create_vm", (node, vmid), kv)) or "UPID:pve-node7:cr"
-    )
-    pve.wait_status = lambda *a, **kw: None
-    pve.make_template = lambda *a: None
-    pve.vms[3900] = {
-        "vmid": 3900,
-        "name": "t",
-        "node": "pve-node7",
-        "pool": "",
-        "status": "stopped",
-        "tags": "",
-        "cores": 8,
-        "memory": 1,
-        "balloon": 1,
-        "disk": "2G",
-    }
+    pve = TemplatePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
     assert template.build(cfg(), pve, k8s=None, node=None, **QUIET) == 0
     assert any(c[0] == "create_vm" for c in pve.calls)
 
 
-def test_build_rewrites_a_stale_snippet_in_the_mounted_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+def test_build_rewrites_a_stale_snippet_in_the_mounted_dir(tmp_path):
     mounted = tmp_path / "snippets"
     mounted.mkdir()
     (mounted / template.SNIPPET).write_text(template.user_data("v2026.10.0", "1.37.0"))
     c = cfg(k8s=None)
-    c = Config(
-        c.pve,
-        c.guacamole,
-        c.vm,
-        TemplateConfig(
-            c.template.image_url,
-            c.template.image_sha512,
-            c.template.tk8s_version,
-            None,
-            snippets_dir=str(mounted),
-        ),
-    )
-    pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
-    pve.create_vm = lambda node, vmid, **kv: "UPID:pve-node7:cr"
-    pve.wait_status = lambda *a, **kw: None
-    pve.make_template = lambda *a: None
-    pve.vms[3900] = {
-        "vmid": 3900,
-        "name": "t",
-        "node": "pve-node7",
-        "pool": "",
-        "status": "stopped",
-        "tags": "",
-        "cores": 8,
-        "memory": 1,
-        "balloon": 1,
-        "disk": "2G",
-    }
+    c = replace(c, template=replace(c.template, snippets_dir=str(mounted)))
+    pve = TemplatePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
+
     lines = []
     assert template.build(c, pve, k8s=None, node=None, log=lines.append) == 0
     written = (mounted / template.SNIPPET).read_text()
@@ -314,17 +241,16 @@ def test_build_rewrites_a_stale_snippet_in_the_mounted_dir(tmp_path, monkeypatch
     assert any("rewrote" in line or "wrote" in line for line in lines)
 
 
-def test_build_k8s_flag_pins_the_prepull(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+def test_build_k8s_flag_pins_the_prepull():
     assert template.build(cfg(k8s=None), FakePve(), k8s="1.36.5", node=None, **QUIET) == 1
-    written = (tmp_path / "tklab" / template.SNIPPET).read_text()
+    written = (state_dir() / template.SNIPPET).read_text()
     assert "tkctl pull images --k8s 1.36.5" in written
 
 
 def test_build_403_points_at_init_pve():
     from tklab.pve import PveError
 
-    pve = FakePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
+    pve = TemplatePve(snippets=[template.SNIPPET], imports=["debian-13-genericcloud-amd64.qcow2"])
 
     def forbidden(node, vmid, **kv):
         raise PveError(403, "POST /nodes/pve-node7/qemu: Permission check failed")

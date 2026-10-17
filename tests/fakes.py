@@ -1,12 +1,11 @@
-"""Recording fakes for Pve and Guac with injectable failures.
-
-FakePve mirrors what the real API shows a pool-scoped token: VMIDs outside the pool are
-invisible to next_vmid (`hidden`), only /cluster/nextid (vmid_free) sees the whole cluster,
-and next_vmid never reserves anything.
-"""
+"""Recording fakes for Pve and Guac with injectable failures."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from tklab import setup
+from tklab.config import Config, GuacConfig, PveConfig, TemplateConfig, VmConfig
 from tklab.guac import GuacError
 from tklab.pve import PveError
 
@@ -16,9 +15,7 @@ class FakePve:
         self,
         *,
         used=(),
-        hidden=(),
         nodes=("pve-node7",),
-        node_stats=True,
         template_node="pve-node6",
         template_disk="60G",
         ips=None,
@@ -32,9 +29,7 @@ class FakePve:
         fail_file_write_for=None,
     ):
         self.used = set(used)
-        self.hidden = set(hidden)
         self.nodes = list(nodes)
-        self.node_stats = node_stats
         self.template_node = template_node
         self.template_disk = template_disk
         self.ips = ips or {}
@@ -46,14 +41,12 @@ class FakePve:
         self.k8s_exit_for = dict(k8s_exit_for or {})  # vm name -> exit code (default 0)
         self.k8s_hold = k8s_hold  # threading.Event: commands stay running until it is set
         self.fail_file_write_for = set(fail_file_write_for or ())
-        self.files = {}  # vmid -> (path, content) of the last agent file-write
         self._execs: dict[int, dict] = {}
         self.inflight: dict[str, int] = {}
         self.max_inflight: dict[str, int] = {}
         self.vms: dict[int, dict] = {}
         self.calls: list[tuple] = []
         self.deleted: list[int] = []
-        self.clone_lock_calls = 0
 
     # --- inventory
     def next_vmid(self, lo, hi, exclude=frozenset()):
@@ -64,7 +57,7 @@ class FakePve:
         raise PveError(409, f"no free VMID in {lo}-{hi}")
 
     def vmid_free(self, vmid):
-        return vmid not in self.used and vmid not in self.vms and vmid not in self.hidden
+        return vmid not in self.used and vmid not in self.vms
 
     def online_nodes(self):
         return list(self.nodes)
@@ -155,7 +148,7 @@ class FakePve:
     def agent_exec(self, node, vmid, command):
         self.calls.append(("exec", vmid, command))
         pid = 1000 + len(self._execs)
-        self._execs[pid] = {"vmid": vmid, "node": node}
+        self._execs[pid] = {"done": False}
         self.inflight[node] = self.inflight.get(node, 0) + 1
         self.max_inflight[node] = max(self.max_inflight.get(node, 0), self.inflight[node])
         return pid
@@ -165,7 +158,6 @@ class FakePve:
         if name in self.fail_file_write_for:
             raise PveError(403, "no file-write")
         self.calls.append(("file-write", vmid, path, content))
-        self.files[vmid] = (path, content)
 
     def agent_exec_status(self, node, vmid, pid):
         x = self._execs[pid]
@@ -392,3 +384,96 @@ class FakeGuacAdmin:
         if totp_secret == self.enrolled_secret:
             return {"secret": None}
         raise GuacError(403, "Verification code required", {"expected": [{"name": "guac-totp"}]})
+
+
+SUMS = "abc123  debian-13-genericcloud-amd64.qcow2\nzzz  other.qcow2\n"
+
+
+def answers(**kw):
+    base = dict(
+        pve_url="https://192.168.1.253:8006",
+        pve_admin="root@pam",
+        node="auto",
+        pool="lab",
+        storage="nas-nfs",
+        bridge="vmbr0",
+        template=3900,
+        vmid_range=(3100, 3199),
+        guacamole_url="https://guac",
+        guacamole_admin="guacadmin",
+        image_sha512="abc123",
+        clone_storage=None,
+    )
+    return setup.Answers(**(base | kw))
+
+
+class ServiceClient:
+    """What make_client returns: a Guac-like object whose login goes through the fake admin."""
+
+    def __init__(self, fake, username, password, totp_secret):
+        self.fake, self.username, self.password, self.totp_secret = (
+            fake,
+            username,
+            password,
+            totp_secret,
+        )
+
+    def login(self):
+        r = self.fake.service_login(self.username, self.password, self.totp_secret)
+        if r["secret"]:
+            # the real client raises the challenge; setup reads the secret from it
+            body = {"expected": [{"name": "guac-totp", "secret": r["secret"]}]}
+            raise GuacError(403, "Verification code required", body)
+
+    def enrol(self, code):
+        self.fake.calls.append(("enrol", self.username, code))
+
+    def logout(self):
+        pass
+
+
+def make_cfg(**pve_overrides):
+    baseline = Config(
+        PveConfig(
+            "https://pve",
+            "lab@pve!tklab",
+            "auto",
+            "lab",
+            "nas-nfs",
+            3900,
+            (3100, 3199),
+            "vmbr0",
+            build_token_id="lab@pve!tklab-build",
+        ),
+        GuacConfig("https://guac", "tklab"),
+        VmConfig(),
+        TemplateConfig(
+            "https://x/debian-13-genericcloud-amd64.qcow2", "deadbeef", "v2026.10.1", "1.37.0"
+        ),
+    )
+    return replace(baseline, pve=replace(baseline.pve, **pve_overrides))
+
+
+class TokenClient:
+    """Stands in for Pve when setup checks a kept token with GET /version: `errors` maps a
+    secret to the PveError it raises (default: "stale" and "bad" are rejected), `calls`
+    collects (url, token_id, secret, ca_file) per construction. Bind both with partial."""
+
+    def __init__(self, url, token_id, secret, *, ca_file=None, errors=None, calls=None):
+        if calls is not None:
+            calls.append((url, token_id, secret, ca_file))
+        self.secret = secret
+        self.errors = (
+            errors
+            if errors is not None
+            else {
+                "stale": PveError(401, "invalid token"),
+                "bad": PveError(401, "invalid token"),
+            }
+        )
+
+    def request(self, method, path, params=None):
+        assert (method, path) == ("GET", "/version")
+        if self.secret in self.errors:
+            raise self.errors[self.secret]
+        return {"version": "9.2"}

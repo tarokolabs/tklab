@@ -3,29 +3,21 @@ import pytest
 from tklab import config, prompt, setup
 from tklab.pve import PveError
 
-from .fakes import FakePveAdmin
+from .fakes import SUMS, FakePveAdmin, answers
 
-SUMS = "abc123  debian-13-genericcloud-amd64.qcow2\nzzz  other.qcow2\n"
 IMAGE = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
 TEXT = ["https://p", "", "", "", "", "", "", "", "", "https://g", ""]
 
 
-def answers(**kw):
-    base = dict(
-        pve_url="https://192.168.1.253:8006",
-        pve_admin="root@pam",
-        node="auto",
-        pool="lab",
-        storage="nas-nfs",
-        bridge="vmbr0",
-        template=3900,
-        vmid_range=(3100, 3199),
-        guacamole_url="https://guac",
-        guacamole_admin="guacadmin",
-        image_sha512="abc123",
-        clone_storage=None,
+def ask(text=TEXT, secrets=("pve-pw", "guac-pw"), admin=None, guac_login=None, admin_factory=None):
+    script, passwords = iter(text) if not callable(text) else None, iter(secrets)
+    return prompt.ask(
+        admin_factory=admin_factory
+        or (lambda url, user, password: admin or FakePveAdmin(nodes=["n1"])),
+        ask_text=text if callable(text) else (lambda question, default: next(script) or default),
+        ask_secret=lambda question: next(passwords),
+        guac_login=guac_login or (lambda *args: None),
     )
-    return setup.Answers(**(base | kw))
 
 
 def ensure(**kw):
@@ -134,7 +126,7 @@ def test_prompt_walks_the_questions_and_uses_pve_for_choices():
             "",  # guacamole admin (default guacadmin)
         ]
     )
-    secrets = iter(["pve-pass", "guac-pass"])
+    secrets = ["pve-pass", "guac-pass"]
     seen = []
 
     def ask_text(question, default):
@@ -147,14 +139,15 @@ def test_prompt_walks_the_questions_and_uses_pve_for_choices():
         made.update(url=url, user=user, password=password)
         return admin
 
-    a, got_admin, guac_pw = prompt.ask(
+    logins = []
+    a = ask(
+        text=ask_text,
+        secrets=secrets,
         admin_factory=admin_factory,
-        ask_text=ask_text,
-        ask_secret=lambda q: next(secrets),
-        guac_login=lambda url, user, pw, totp: None,
+        guac_login=lambda url, user, pw, totp: logins.append((user, pw)),
     )
     assert made == {"url": "https://192.168.1.253:8006", "user": "root@pam", "password": "pve-pass"}
-    assert got_admin is admin and guac_pw == "guac-pass"
+    assert logins == [("guacadmin", "guac-pass")]
     assert (a.storage, a.bridge, a.node, a.pool) == ("nas-nfs", "vmbr0", "auto", "lab")
     assert (a.template, a.vmid_range) == (3900, (3100, 3199))
     assert a.guacamole_url == "https://guac" and a.guacamole_admin == "guacadmin"
@@ -163,6 +156,7 @@ def test_prompt_walks_the_questions_and_uses_pve_for_choices():
 
 def test_prompt_retries_pve_login_and_asks_totp_when_challenged():
     attempts = []
+    admin = FakePveAdmin(nodes=["n1"])
 
     def admin_factory(url, user, password):
         attempts.append(password)
@@ -170,17 +164,11 @@ def test_prompt_retries_pve_login_and_asks_totp_when_challenged():
             raise PveError(401, "authentication failure")
         if len(attempts) == 2:
             raise PveError(401, "root@pam needs a TFA code")
-        return FakePveAdmin(nodes=["n1"])
+        return admin
 
-    text = iter(TEXT)
-    secrets = iter(["wrong", "right", "123456", "right", "guac-pw"])
-    _, admin, _ = prompt.ask(
-        admin_factory=admin_factory,
-        ask_text=lambda q, d: next(text) or d,
-        ask_secret=lambda q: next(secrets),
-        guac_login=lambda url, user, pw, totp: None,
-    )
-    assert attempts == ["wrong", "right", "right"] and admin.nodes() == ["n1"]
+    secrets = ["wrong", "right", "123456", "right", "guac-pw"]
+    ask(secrets=secrets, admin_factory=admin_factory)
+    assert attempts == ["wrong", "right", "right"]
     assert ("login", "123456") in admin.calls
 
 
@@ -195,14 +183,8 @@ def test_interactive_asks_totp_when_challenged_by_guacamole():
             body = {"expected": [{"name": "guac-totp"}]}
             raise GuacError(403, "Verification code required", body)
 
-    text = iter(TEXT)
-    secrets = iter(["pve-pw", "guac-pw", "654321"])
-    prompt.ask(
-        admin_factory=lambda u, us, p: FakePveAdmin(nodes=["n1"]),
-        ask_text=lambda q, d: next(text) or d,
-        ask_secret=lambda q: next(secrets),
-        guac_login=guac_login,
-    )
+    secrets = ["pve-pw", "guac-pw", "654321"]
+    ask(secrets=secrets, guac_login=guac_login)
     assert tries == [None, "654321"]
 
 
@@ -211,14 +193,9 @@ def test_prompt_refuses_when_no_storage_qualifies():
         def storages(self):
             return [{"storage": "local-lvm", "type": "lvmthin", "content": "images", "shared": 0}]
 
-    text = iter(["https://p", ""])
+    text = ["https://p", ""]
     with pytest.raises(setup.SetupError, match="snippets"):
-        prompt.ask(
-            admin_factory=lambda u, us, p: NoStorage(nodes=["n1"]),
-            ask_text=lambda q, d: next(text) or d,
-            ask_secret=lambda q: "pw",
-            guac_login=lambda *a: None,
-        )
+        ask(text=text, secrets=("pw", "pw"), admin=NoStorage(nodes=["n1"]))
 
 
 def test_prompt_aborts_on_non_auth_pve_errors():
@@ -229,14 +206,9 @@ def test_prompt_aborts_on_non_auth_pve_errors():
         asked.append(password)
         raise PveError(0, "POST /access/ticket: certificate verify failed")
 
-    text = iter(["https://p", ""])
+    text = ["https://p", ""]
     with pytest.raises(PveError, match="certificate"):
-        prompt.ask(
-            admin_factory=admin_factory,
-            ask_text=lambda q, d: next(text) or d,
-            ask_secret=lambda q: "pw",
-            guac_login=lambda *a: None,
-        )
+        ask(text=text, secrets=("pw", "pw"), admin_factory=admin_factory)
     assert asked == ["pw"]
 
 
@@ -246,14 +218,8 @@ def test_prompt_aborts_on_non_auth_guacamole_errors():
     def guac_login(url, user, pw, totp):
         raise GuacError(0, "POST /tokens: Connection refused")
 
-    text = iter(TEXT)
     with pytest.raises(GuacError, match="refused"):
-        prompt.ask(
-            admin_factory=lambda u, us, p: FakePveAdmin(nodes=["n1"]),
-            ask_text=lambda q, d: next(text) or d,
-            ask_secret=lambda q: "pw",
-            guac_login=guac_login,
-        )
+        ask(guac_login=guac_login)
 
 
 def test_prompt_accepts_the_existing_template_vmid_but_not_a_plain_vm():
@@ -264,41 +230,29 @@ def test_prompt_accepts_the_existing_template_vmid_but_not_a_plain_vm():
         def vm_is_template(self, vmid):
             return vmid == 3900
 
-    script = iter(["https://p", "", "", "", "", "", "3000", "3900", "", "", "https://g", ""])
-    a, _, _ = prompt.ask(
-        admin_factory=lambda u, us, p: Cluster(nodes=["n1"]),
-        ask_text=lambda q, d: next(script) or d,
-        ask_secret=lambda q: "pw",
-        guac_login=lambda *a: None,
-    )
+    script = ["https://p", "", "", "", "", "", "3000", "3900", "", "", "https://g", ""]
+    a = ask(text=script, admin=Cluster(nodes=["n1"]))
     assert a.template == 3900  # 3000 (a running VM) was refused, 3900 (the template) accepted
 
 
 def test_prompt_validates_the_student_range():
-    script = iter(
-        [
-            "https://p",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "3199-3100",
-            "3899-3901",
-            "abc",
-            "3100-3199",
-            "",
-            "https://g",
-            "",
-        ]
-    )
-    a, _, _ = prompt.ask(
-        admin_factory=lambda u, us, p: FakePveAdmin(nodes=["n1"]),
-        ask_text=lambda q, d: next(script) or d,
-        ask_secret=lambda q: "pw",
-        guac_login=lambda *a: None,
-    )
+    script = [
+        "https://p",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "3199-3100",
+        "3899-3901",
+        "abc",
+        "3100-3199",
+        "",
+        "https://g",
+        "",
+    ]
+    a = ask(text=script)
     assert a.vmid_range == (
         3100,
         3199,
@@ -353,25 +307,14 @@ def test_prompt_offers_node_local_storages_for_clones():
         seen.append((q, d))
         return next(script) or d
 
-    a, _, _ = prompt.ask(
-        admin_factory=lambda u, us, p: WithLocal(nodes=["n1"]),
-        ask_text=ask_text,
-        ask_secret=lambda q: "pw",
-        guac_login=lambda *a: None,
-    )
+    a = ask(text=ask_text, admin=WithLocal(nodes=["n1"]))
     assert a.clone_storage == "local-lvm"
     q, d = next(x for x in seen if "student VMs" in x[0])
     assert "local-lvm" in q and "local" not in q.replace("local-lvm", "") and d == "local-lvm"
 
 
 def test_prompt_skips_the_clone_storage_question_without_local_storage():
-    script = iter(TEXT)
-    a, _, _ = prompt.ask(
-        admin_factory=lambda u, us, p: FakePveAdmin(nodes=["n1"]),
-        ask_text=lambda q, d: next(script) or d,
-        ask_secret=lambda q: "pw",
-        guac_login=lambda *a: None,
-    )
+    a = ask()
     assert a.clone_storage is None
 
 
@@ -395,12 +338,7 @@ def test_prompt_asks_which_nodes_may_host_student_vms():
         seen.append(q)
         return next(script) or d
 
-    a, _, _ = prompt.ask(
-        admin_factory=lambda u, us, p: FakePveAdmin(nodes=["n1", "n2", "n3"]),
-        ask_text=ask_text,
-        ask_secret=lambda q: "pw",
-        guac_login=lambda *a: None,
-    )
+    a = ask(text=ask_text, admin=FakePveAdmin(nodes=["n1", "n2", "n3"]))
     assert a.nodes == ("n2", "n3")
     assert any("student VMs" in q and "n1, n2, n3" in q for q in seen)
 
@@ -420,9 +358,8 @@ def test_choose_shows_the_options_once_and_the_default_once():
 
 def test_prompt_refuses_when_no_node_is_online():
     with pytest.raises(setup.SetupError, match="no online PVE node"):
-        prompt.ask(
-            admin_factory=lambda url, user, pw: FakePveAdmin(nodes=[]),
-            ask_text=lambda q, d: "https://p" if "URL" in q else d,
-            ask_secret=lambda q: "pw",
-            guac_login=lambda *a: None,
+        ask(
+            text=lambda q, d: "https://p" if "URL" in q else d,
+            secrets=("pw", "pw"),
+            admin=FakePveAdmin(nodes=[]),
         )
