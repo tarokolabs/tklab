@@ -737,3 +737,14 @@ def test_unexpected_error_keeps_the_entry_fields(monkeypatch):
     (e,) = provision.create(k8s_cd(["alice"]), CFG, pve, guac, parallel=1, **QUIET)
     assert e.error == "unexpected RuntimeError: surprise"
     assert e.ip == "192.168.1.100" and e.guac_user == "alice" and e.guac_password
+
+
+def test_k8s_rerun_after_a_connect_failure_retags_with_the_current_value():
+    pve = FakePve(agent_timeout_for={"lab-k8s-101-alice"})
+    guac = FakeGuac()
+    (e,) = provision.create(k8s_cd(["alice"]), CFG, pve, guac, parallel=1, **QUIET)
+    assert "no IPv4" in e.error and "k8s-default" in pve.vms[3100]["tags"].split(";")
+    pve.agent_timeout_for.clear()
+    (again,) = provision.create(k8s_cd(["alice"], "ha"), CFG, pve, guac, parallel=1, **QUIET)
+    assert again.error == "" and "--preset ha" in script_of(execs(pve)[0])
+    assert "k8s-ha" in pve.vms[3100]["tags"].split(";")

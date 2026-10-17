@@ -227,3 +227,19 @@ def test_to_toml_marks_the_file_placeholder():
         "# this student's cluster came from a cluster.yaml; point init_cluster at that file\n"
         'init_cluster = "cluster.yaml"\n'
     ) in text
+
+
+def test_cluster_name_caps_the_length_like_tk8s():
+    assert classdef.cluster_name("metadata:\n  name: " + "a" * 16 + "\n") == "a" * 16
+    assert classdef.cluster_name("metadata:\n  name: " + "a" * 17 + "\n") is None
+
+
+def test_init_cluster_preset_name_caps_the_length_like_tk8s():
+    assert flags("k8s-101", 1, init_cluster="a" * 16).students[0].init_cluster == "a" * 16
+    with pytest.raises(classdef.ClassDefError, match="must be"):
+        flags("k8s-101", 1, init_cluster="a" * 17)
+
+
+def test_cluster_name_skips_comments_and_blank_lines():
+    assert classdef.cluster_name("metadata:  # the cluster\n  name: a\n") == "a"
+    assert classdef.cluster_name("metadata:\n# column-0 comment\n\n  name: b\nspec: {}\n") == "b"

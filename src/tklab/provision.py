@@ -309,10 +309,11 @@ def _connect(c: _Class, s: Student, e: roster.Entry, *, resume: bool) -> roster.
     return _entry(s, e.vmid, e.node, ip, login, "", gp=guac_password, vp=e.vm_password)
 
 
-def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool) -> roster.Entry:
+def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool, retag: bool) -> roster.Entry:
     """Build the tk8s cluster inside a connected VM through the guest agent; keeps e's secrets.
-    A rerun (the roster says `k8s:`) first rewrites the tag, since the instructor has likely
-    changed the value, and the command deletes the previous attempt's cluster."""
+    Any resumed student (`retag`) first gets the tag rewritten, since the instructor may have
+    changed the value since the clone; a rerun of the cluster step itself (the roster says
+    `k8s:`) also has the command delete the previous attempt's cluster."""
     name = vm_name(c.cd.name, s)
     assert s.init_cluster is not None
 
@@ -331,7 +332,7 @@ def _k8s(c: _Class, s: Student, e: roster.Entry, *, rerun: bool) -> roster.Entry
         cluster = classdef.cluster_name(text) or "tk8s"  # classdef checked it; keep going
     with c.k8s_slot(e.node):
         try:
-            if rerun:
+            if retag:
                 c.pve.set_config(e.node, e.vmid, tags=_tags(c.cd, s))
             if text is not None:
                 c.pve.agent_file_write(e.node, e.vmid, K8S_FILE, text)
@@ -384,7 +385,7 @@ def _provision_one(
                         gp=e.guac_password,
                         vp=e.vm_password,
                     )
-                return _k8s(c, s, previous, rerun=True)
+                return _k8s(c, s, previous, rerun=True, retag=True)
             if previous.error.startswith("vm setup"):
                 current = e = _setup(c, s, previous)
                 if e.error:
@@ -396,7 +397,7 @@ def _provision_one(
         current = e = _connect(c, s, e, resume=previous is not None)
         if e.error or s.init_cluster is None:
             return e
-        return _k8s(c, s, e, rerun=False)
+        return _k8s(c, s, e, rerun=False, retag=previous is not None)
     except Exception as err:  # one student's surprise must not sink the class
         why = f"unexpected {type(err).__name__}: {err}"
         if current is None:

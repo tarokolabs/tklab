@@ -15,7 +15,7 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")
 STUDENT_RE = re.compile(r"^([a-z][a-z0-9-]{0,15}|[0-9]{2,3})$")
 VM_FIELDS = ("cores", "memory", "balloon", "disk")
 # init_cluster: "default", a tk8s preset name passed through to tkctl, or a cluster.yaml
-PRESET_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+PRESET_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")  # tk8s's cluster-name rule too
 RESERVED = ("default", "file")  # not preset names: "file" is the tag for a cluster.yaml
 FILE_PLACEHOLDER = "cluster.yaml"  # what describe gives a student whose cluster came from a file
 FILE_LIMIT = 61440  # PVE's agent file-write takes at most this many bytes
@@ -71,7 +71,7 @@ def is_file(value: str) -> bool:
     return value.endswith((".yaml", ".yml"))
 
 
-_META = re.compile(r"^metadata:\s*$")
+_META = re.compile(r"^metadata:\s*(#.*)?$")
 _NAME = re.compile(r"^\s+name:\s*(.+?)\s*(#.*)?$")
 
 
@@ -84,7 +84,9 @@ def cluster_name(text: str) -> str | None:
         if _META.match(line):
             inside = True
             continue
-        if inside and line and not line[0].isspace():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if inside and not line[0].isspace():
             return None
         m = _NAME.match(line) if inside else None
         if m:
