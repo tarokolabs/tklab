@@ -120,6 +120,18 @@ def test_describe_plain_and_roster(env, capsys):
     assert rc == 0 and re.search(r"k8s-101-01\s+\S{16}", out)
 
 
+def test_describe_says_auto_when_the_vms_sit_on_several_nodes(env, capsys):
+    """A class placed with node = auto has no single node; describe must not print "node None"."""
+    pve, guac = FakePve(), FakeGuac()
+    run(["create", "class", "k8s-101", "--students", "2"], pve, guac)
+    vms = [v for v in pve.vms.values() if v["name"].startswith("lab-k8s-101-")]
+    vms[0]["node"], vms[1]["node"] = "pve-node6", "pve-node8"
+    capsys.readouterr()
+    rc, *_ = run(["describe", "class", "k8s-101"], pve, guac)
+    out = capsys.readouterr().out
+    assert rc == 0 and "node auto" in out and "None" not in out
+
+
 def test_describe_unknown_class_is_exit_1(env, capsys):
     rc, *_ = run(["describe", "class", "nope"])
     assert rc == 1 and "no class nope" in capsys.readouterr().err
