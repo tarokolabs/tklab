@@ -425,8 +425,10 @@ def _describe_class(args, cfg, pve) -> int:
     if args.o == "toml":
         print(classdef.to_toml(cd), end="")
         return 0
+    # node is None when the VMs sit on several nodes (the class was placed with node = auto)
     print(
-        f"{cd.name}: {len(cd.students)} students, expires {cd.expires or 'never'}, node {cd.node}"
+        f"{cd.name}: {len(cd.students)} students, expires {cd.expires or 'never'}, "
+        f"node {cd.node or 'auto'}"
     )
     for s in cd.students:
         print(f"  {s.name:12} {s.cores} cpu  {s.memory} MiB  {s.disk}")
