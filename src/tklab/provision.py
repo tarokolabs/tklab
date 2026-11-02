@@ -18,7 +18,7 @@ from .config import Config
 from .guac import RDP_PARAMS, SSH_PARAMS, GuacError
 from .pve import PveError, tags
 
-STUDENT_USER = "student"
+VM_USER = "tk"  # the one account in every VM; the learner logs in as it
 ALPHABET = string.ascii_letters + string.digits
 AGENT_TIMEOUT = 300
 CLONE_TIMEOUT = 300
@@ -55,7 +55,7 @@ def size_bytes(size: str) -> int:
 
 
 def k8s_command(init_cluster: str, cluster_name: str, *, rerun: bool) -> list[str]:
-    """The guest-agent command that builds the student's cluster: tkctl as `student`, output
+    """The guest-agent command that builds the student's cluster: tkctl as the VM user, output
     to K8S_LOG. A cluster.yaml is made world-readable first (the agent writes it 0666); a rerun
     deletes what the failed attempt left, since tkctl would resume the old topology, but not
     while that attempt is still running (a timed-out build keeps going in the VM)."""
@@ -64,7 +64,7 @@ def k8s_command(init_cluster: str, cluster_name: str, *, rerun: bool) -> list[st
     elif classdef.is_file(init_cluster):
         create = f"tkctl create cluster -f {K8S_FILE}"
     else:
-        create = f"tkctl create cluster tk8s --preset {init_cluster}"
+        create = f"tkctl create cluster tk8s --mode {init_cluster}"
     delete = f"tkctl delete cluster {cluster_name} --yes; " if rerun else ""
     inner = (
         f"{delete}{create} && tkctl use cluster {cluster_name} && "
@@ -73,7 +73,7 @@ def k8s_command(init_cluster: str, cluster_name: str, *, rerun: bool) -> list[st
     root = f"chmod 0644 {K8S_FILE} && " if classdef.is_file(init_cluster) else ""
     if rerun:  # [t] so pgrep does not match this very command line
         root = f"pgrep -f '[t]kctl create cluster' >/dev/null && exit {K8S_BUSY}; " + root
-    script = f"{root}/usr/sbin/runuser -u {STUDENT_USER} -- bash -lc '{inner}' > {K8S_LOG} 2>&1"
+    script = f"{root}/usr/sbin/runuser -u {VM_USER} -- bash -lc '{inner}' > {K8S_LOG} 2>&1"
     return ["/bin/bash", "-c", script]
 
 
@@ -244,7 +244,7 @@ def _setup(c: _Class, s: Student, e: roster.Entry) -> roster.Entry:
         c.pve.set_config(
             e.node,
             e.vmid,
-            ciuser=STUDENT_USER,
+            ciuser=VM_USER,
             cipassword=e.vm_password,
             ipconfig0="ip=dhcp",
             ciupgrade=0,
@@ -298,7 +298,7 @@ def _connect(c: _Class, s: Student, e: roster.Entry, *, resume: bool) -> roster.
             proto = "ssh" if kind == "SSH" else "rdp"
             ids.append(
                 c.guac.create_connection(
-                    c.group_id, conn_name, proto, params(ip, STUDENT_USER, e.vm_password)
+                    c.group_id, conn_name, proto, params(ip, VM_USER, e.vm_password)
                 )
             )
         c.guac.grant(login, connections=ids, groups=[c.group_id])

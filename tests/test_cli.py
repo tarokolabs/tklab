@@ -393,7 +393,7 @@ def test_create_init_cluster_flag_builds_clusters_and_is_exclusive_with_file(env
     rc, pve, _ = run(argv)
     assert rc == 0
     assert sorted(c[1] for c in pve.calls if c[0] == "exec") == [3100, 3101]
-    assert "--preset ha" in next(c[2][2] for c in pve.calls if c[0] == "exec")
+    assert "--mode ha" in next(c[2][2] for c in pve.calls if c[0] == "exec")
     assert "tk8s cluster ready" in capsys.readouterr().out
     f = tmp_path / "c.toml"
     f.write_text('name = "k8s-102"\ncount = 1\n')

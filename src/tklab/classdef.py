@@ -14,9 +14,9 @@ from .envfile import unquote
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")
 # A student is a name (same rule as class names) or the number a count expands to (01, 02, ...).
 STUDENT_RE = re.compile(r"^([a-z][a-z0-9-]{0,15}|[0-9]{2,3})$")
-# init_cluster: "default", a tk8s preset name passed through to tkctl, or a cluster.yaml
+# init_cluster: "default", a tk8s mode name passed through to tkctl (--mode), or a cluster.yaml
 PRESET_RE = re.compile(r"^[a-z][a-z0-9-]{0,15}$")  # tk8s's cluster-name rule too
-RESERVED = ("default", "file")  # not preset names: "file" is the tag for a cluster.yaml
+RESERVED = ("default", "file")  # not mode names: "file" is the tag for a cluster.yaml
 FILE_PLACEHOLDER = "cluster.yaml"  # what describe gives a student whose cluster came from a file
 FILE_LIMIT = 61440  # PVE's agent file-write takes at most this many bytes
 
@@ -32,7 +32,7 @@ class Student:
     memory: int
     balloon: int
     disk: str
-    init_cluster: str | None = None  # "default", a preset name, or a cluster.yaml's absolute path
+    init_cluster: str | None = None  # "default", a mode name, or a cluster.yaml's absolute path
 
 
 @dataclass(frozen=True)
@@ -99,7 +99,7 @@ def parse_init_cluster(value: object, base: Path, where: str, errors: list[str])
         return value
     if not is_file(value):
         errors.append(
-            f'{where} must be "default", a tk8s preset name (lowercase letters, digits and -; '
+            f'{where} must be "default", a tk8s mode name (lowercase letters, digits and -; '
             f'not "file") or a .yaml file, got {value!r}'
         )
         return None
