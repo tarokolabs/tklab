@@ -56,7 +56,7 @@ def test_create_provisions_vm_and_two_connections_per_student():
     first_wait = next(i for i, c in enumerate(pve.calls) if c[0] == "wait")
     assert first_wait < next(i for i, c in enumerate(pve.calls) if c[0] == "config")
     kv = next(c[2] for c in pve.calls if c[0] == "config" and c[1] == 3101)
-    assert kv["ciuser"] == "student" and kv["ipconfig0"] == "ip=dhcp" and kv["ciupgrade"] == 0
+    assert kv["ciuser"] == "tk" and kv["ipconfig0"] == "ip=dhcp" and kv["ciupgrade"] == 0
     assert e.vm_password == kv["cipassword"]
     assert not any(c[0] == "resize" for c in pve.calls)  # 60G equals the template disk
     assert len(kv["cipassword"]) >= 16
@@ -68,7 +68,7 @@ def test_create_provisions_vm_and_two_connections_per_student():
     assert names == ["k8s-101-alice Browser", "k8s-101-alice SSH"]
     rdp = next(c for c in guac.connections.values() if c["protocol"] == "rdp")
     assert rdp["parameters"]["hostname"] == "192.168.1.77"
-    assert rdp["parameters"]["username"] == "student"
+    assert rdp["parameters"]["username"] == "tk"
     assert rdp["parameters"]["password"] == kv["cipassword"]
     assert guac.grants["alice"] == set(guac.connections)
     p = roster.path("k8s-101")
@@ -445,7 +445,7 @@ def test_k8s_runs_tkctl_as_the_student_in_each_vm_after_connecting():
     (_, _, command) = execs(pve)[0]
     assert command[:2] == ["/bin/bash", "-c"]
     script = command[2]
-    assert "runuser -u student" in script
+    assert "runuser -u tk" in script
     assert (
         "tkctl create cluster tk8s && tkctl use cluster tk8s && tkctl verify cluster tk8s" in script
     )
@@ -525,11 +525,11 @@ def test_describe_reads_the_k8s_tag_back():
 
 def test_k8s_command_three_forms_and_rerun():
     plain = provision.k8s_command("default", "tk8s", rerun=False)[2]
-    assert plain.startswith("/usr/sbin/runuser -u student -- bash -lc '")
+    assert plain.startswith("/usr/sbin/runuser -u tk -- bash -lc '")
     inner = "'tkctl create cluster tk8s && tkctl use cluster tk8s && tkctl verify cluster tk8s'"
     assert inner in plain and plain.endswith("> /var/log/tklab-k8s.log 2>&1")
     preset = provision.k8s_command("ha", "tk8s", rerun=False)[2]
-    assert "--preset ha && tkctl use cluster tk8s" in preset
+    assert "--mode ha && tkctl use cluster tk8s" in preset
     f = provision.k8s_command("/tmp/x.yaml", "demo", rerun=False)[2]
     assert f.startswith("chmod 0644 /var/lib/tklab/cluster.yaml && /usr/sbin/runuser")
     assert (
@@ -537,7 +537,7 @@ def test_k8s_command_three_forms_and_rerun():
         "tkctl verify cluster demo'"
     ) in f
     again = provision.k8s_command("ha", "tk8s", rerun=True)[2]
-    assert "'tkctl delete cluster tk8s --yes; tkctl create cluster tk8s --preset ha && " in again
+    assert "'tkctl delete cluster tk8s --yes; tkctl create cluster tk8s --mode ha && " in again
     assert "--yes" not in plain
     assert provision.k8s_command("ha", "tk8s", rerun=False)[:2] == ["/bin/bash", "-c"]
 
@@ -547,7 +547,7 @@ def test_k8s_preset_tags_the_vm_and_sends_no_file():
     provision.create(k8s_cd(["alice"], "ha"), CFG, pve, guac, parallel=1, **QUIET)
     assert "k8s-ha" in pve.vms[3100]["tags"].split(";")
     assert not [c for c in pve.calls if c[0] == "file-write"]
-    assert "--preset ha" in script_of(execs(pve)[0])
+    assert "--mode ha" in script_of(execs(pve)[0])
 
 
 def test_k8s_file_is_written_before_exec_and_names_the_cluster(tmp_path):
@@ -577,7 +577,7 @@ def test_k8s_per_student_values_run_their_own_commands():
     provision.create(mixed, CFG, pve, guac, parallel=1, **QUIET)
     by_vm = {x[1]: script_of(x) for x in execs(pve)}
     assert set(by_vm) == {3100, 3102}
-    assert "--preset ha" in by_vm[3100] and "--preset" not in by_vm[3102]
+    assert "--mode ha" in by_vm[3100] and "--mode" not in by_vm[3102]
     assert not any(t.startswith("k8s") for t in pve.vms[3101]["tags"].split(";"))
 
 
@@ -682,7 +682,7 @@ def test_k8s_rerun_after_a_connect_failure_retags_with_the_current_value():
     assert "no IPv4" in e.error and "k8s-default" in pve.vms[3100]["tags"].split(";")
     pve.agent_timeout_for.clear()
     (again,) = provision.create(k8s_cd(["alice"], "ha"), CFG, pve, guac, parallel=1, **QUIET)
-    assert again.error == "" and "--preset ha" in script_of(execs(pve)[0])
+    assert again.error == "" and "--mode ha" in script_of(execs(pve)[0])
     assert "k8s-ha" in pve.vms[3100]["tags"].split(";")
 
 

@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--memory", type=int, help="MiB")
     c.add_argument(
         "--init-cluster",
-        help="cluster for every student's VM: default, a tk8s preset name, or a cluster.yaml",
+        help="cluster for every student's VM: default, a tk8s mode name, or a cluster.yaml",
     )
     c.add_argument("--parallel", type=int, default=5, help="students provisioned at once")
     t = create_nouns.add_parser("template", help="build the node template from the cloud image")

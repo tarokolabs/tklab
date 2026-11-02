@@ -135,7 +135,7 @@ def test_init_cluster_three_forms_from_flags(tmp_path, monkeypatch):
 @pytest.mark.parametrize("bad", ["HA", "ha.toml", "", "file", "my preset"])
 def test_init_cluster_rejects_other_values(bad):
     want = (
-        'init_cluster must be "default", a tk8s preset name (lowercase letters, digits and -; '
+        'init_cluster must be "default", a tk8s mode name (lowercase letters, digits and -; '
         f'not "file") or a .yaml file, got {bad!r}'
     )
     with pytest.raises(classdef.ClassDefError, match=re.escape(want)):
@@ -226,7 +226,7 @@ def test_cluster_name_caps_the_length_like_tk8s():
     assert classdef.cluster_name("metadata:\n  name: " + "a" * 17 + "\n") is None
 
 
-def test_init_cluster_preset_name_caps_the_length_like_tk8s():
+def test_init_cluster_mode_name_caps_the_length_like_tk8s():
     assert flags("k8s-101", 1, init_cluster="a" * 16).students[0].init_cluster == "a" * 16
     with pytest.raises(classdef.ClassDefError, match="must be"):
         flags("k8s-101", 1, init_cluster="a" * 17)

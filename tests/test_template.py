@@ -54,7 +54,7 @@ def test_user_data_installs_browser_session_tk8s_and_prepulls_image():
     # the shared image store (tk8s >= v2026.10.3) is filled as the student, after tk8s is installed:
     # /opt/taroko ends up owned by the student uid every clone's student shares, and a clone creates
     # its clusters without pulling anything
-    pull = 'su - student -c "tkctl pull images --k8s 1.37.0"'
+    pull = 'su - tk -c "tkctl pull images --k8s 1.37.0"'
     assert pull in ud
     assert (
         ud.index("TK_VERSION=v2026.10.0 sh")
@@ -64,10 +64,10 @@ def test_user_data_installs_browser_session_tk8s_and_prepulls_image():
     assert "podman pull" not in ud
     # the CNI plugins are the last thing a clone's first create would still download; tk8s
     # v2026.10.7 has no task binary, its phases are tkctl's own
-    cni = 'su - student -c "tkctl create cluster --phase nodes/cni-plugins"'
+    cni = 'su - tk -c "tkctl create cluster --phase nodes/cni-plugins"'
     assert ud.index(pull) < ud.index(cni) < ud.index("touch " + template.BUILD_OK)
     assert "task -d" not in ud
-    assert "name: student" in ud and "NOPASSWD:ALL" in ud
+    assert "name: tk" in ud and "NOPASSWD:ALL" in ud
     assert "PasswordAuthentication yes" in ud and "ssh_pwauth: true" in ud
     assert "swapoff" in ud and "mode: poweroff" in ud
     # the build script stops at the first error and only a finished build powers the VM off
@@ -83,18 +83,16 @@ def test_the_session_is_the_browser():
     the script does. openbox gives the Firefox window a frame with a close button, Firefox runs
     in the foreground, so closing it closes the connection."""
     ud = template.user_data("v2026.10.0", None)
-    start = ud.index("path: /home/student/.xsession")
+    start = ud.index("path: /home/tk/.xsession")
     xsession = ud[start : ud.index("- path:", start + 1)]
     assert "openbox &" in xsession
     assert "exec firefox" in xsession or "firefox" in xsession.split("openbox &", 1)[1]
     assert "xfce4-session" not in xsession
     # openbox opens the Firefox window maximized: the session is the browser, nothing else to see
-    assert "/home/student/.config/openbox/rc.xml" in ud
+    assert "/home/tk/.config/openbox/rc.xml" in ud
     # install -d -o applies the owner to the last directory only: a root-owned ~/.config left
     # Firefox unable to create its profile ("Your Firefox profile cannot be loaded")
-    assert (
-        "install -d -o student -g student /home/student/.config /home/student/.config/openbox" in ud
-    )
+    assert "install -d -o tk -g tk /home/tk/.config /home/tk/.config/openbox" in ud
     assert '<application class="firefox-esr" type="normal">' in ud
     assert "<maximized>yes</maximized>" in ud
 
@@ -193,7 +191,7 @@ def test_build_skips_download_when_image_is_present_and_needs_a_node():
 
 def test_user_data_without_k8s_pin_follows_tk8s_default():
     ud = template.user_data("v2026.10.6", None)
-    assert 'su - student -c "tkctl pull images"\n' in ud
+    assert 'su - tk -c "tkctl pull images"\n' in ud
     assert "--k8s" not in ud
 
 

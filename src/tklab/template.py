@@ -30,7 +30,7 @@ def user_data(tk8s_version: str, k8s: str | None) -> str:
 # tklab template: tk8s preinstalled, every cluster image pre-pulled into its shared image
 # store, CNI plugins installed, a browser session over xrdp (no desktop: the RDP connection
 # is Firefox, closing it ends the session).
-# The student user gets its password per clone (PVE cloud-init cipassword).
+# The VM user `tk` gets its password per clone (PVE cloud-init cipassword).
 package_update: true
 package_upgrade: true
 packages:
@@ -46,7 +46,7 @@ packages:
   - dbus-x11
 ssh_pwauth: true
 users:
-  - name: student
+  - name: tk
     groups: [sudo]
     shell: /bin/bash
     sudo: "ALL=(ALL) NOPASSWD:ALL"
@@ -58,8 +58,8 @@ write_files:
     # node network namespaces copy the host's IPv4 forwarding flag when they are created,
     # and a fresh cloud image boots with it off; kubeadm's preflight then fails inside the node
     content: "net.ipv4.ip_forward = 1\\n"
-  - path: /home/student/.xsession
-    owner: student:student
+  - path: /home/tk/.xsession
+    owner: tk:tk
     permissions: "0755"
     defer: true
     # xrdp runs this for the student and ends the session when it exits: openbox gives the
@@ -86,19 +86,19 @@ write_files:
       sed -i '/ swap / s/^/#/' /etc/fstab
       # openbox opens the Firefox window maximized: the session is the browser, there is
       # nothing else to see. The rule goes into the student's copy of the default rc.xml.
-      install -d -o student -g student /home/student/.config /home/student/.config/openbox
+      install -d -o tk -g tk /home/tk/.config /home/tk/.config/openbox
       awk '/<\\/applications>/ {{ while ((getline l < "{RULE}") > 0) print l }} {{ print }}' \\
-        /etc/xdg/openbox/rc.xml > /home/student/.config/openbox/rc.xml
-      chown student:student /home/student/.config/openbox/rc.xml
+        /etc/xdg/openbox/rc.xml > /home/tk/.config/openbox/rc.xml
+      chown tk:tk /home/tk/.config/openbox/rc.xml
       curl -fsSL -o /tmp/install.sh {raw}
-      su - student -c "TK_VERSION={tk8s_version} sh /tmp/install.sh"
+      su - tk -c "TK_VERSION={tk8s_version} sh /tmp/install.sh"
       # Fill tk8s's shared image store (tk8s >= v2026.10.3) as the student: the node image, the
       # control plane, Cilium and the addons land in /opt/taroko/images, owned by the student uid
-      # every clone's student shares, so a clone creates its clusters without pulling anything.
-      su - student -c "{pull}"
+      # every clone's user shares, so a clone creates its clusters without pulling anything.
+      su - tk -c "{pull}"
       # The CNI plugins are the last download a clone's first create would still make; the
       # phase only installs them under /opt/taroko/cni, no cluster is created.
-      su - student -c "tkctl create cluster --phase nodes/cni-plugins"
+      su - tk -c "tkctl create cluster --phase nodes/cni-plugins"
       install -d /var/lib/tklab
       touch {BUILD_OK}
       cloud-init clean --logs --machine-id
